@@ -144,13 +144,24 @@ class GraphStore:
             ).fetchall()
 
     def modules_importing(self, module: str) -> list[str]:
-        """Modules importing `module` directly or any of its submodules."""
+        """Modules importing `module` directly, any of its submodules, or —
+        for src-layout repos — a known module whose dotted path ends with the
+        import target's module part (module "src.clio.x" imported as "clio.x")."""
         with self._session() as conn:
             rows = conn.execute(
-                "SELECT src FROM imports WHERE target = ? OR target LIKE ? ORDER BY src",
-                (module, module + ".%"),
+                "SELECT src, target FROM imports ORDER BY src, target"
             ).fetchall()
-        return [row[0] for row in rows]
+        srcs: set[str] = set()
+        for src, target in rows:
+            tmod = target.rsplit(".", 1)[0] if "." in target else target
+            if (
+                module == target
+                or module == tmod
+                or target.startswith(module + ".")
+                or module.endswith("." + tmod)
+            ):
+                srcs.add(src)
+        return sorted(srcs)
 
     def module_imports(self, module: str) -> list[str]:
         with self._session() as conn:

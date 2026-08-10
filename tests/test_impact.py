@@ -75,3 +75,15 @@ def test_module_transitive_importers(tmp_path, seed_job):
     impact = impact_of_module(ReportArchive(root), "job-x", "pkg_a.one", depth=2)
     assert impact.affected_modules == ["pkg_a.one", "pkg_b.two", "pkg_c.three"]
     assert impact.verdict == "cross-cutting"
+
+
+def test_symbol_impact_src_layout(tmp_path, seed_job):
+    root = tmp_path / "root"
+    seed_job(root, "job-x", "2026-08-10T00:00:00+00:00", {
+        "src/clio/__init__.py": "",
+        "src/clio/core.py": "def f():\n    return 1\n",
+        "src/clio/main.py": "from clio.core import f\n",
+    })
+    impact = impact_of_symbol(ReportArchive(root), "job-x", "src.clio.core::f")
+    assert impact.affected_modules == ["src.clio.main"]
+    assert impact.verdict == "contained"

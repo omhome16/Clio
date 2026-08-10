@@ -97,3 +97,14 @@ def test_has_symbol(tmp_path, write_tree):
     store = GraphStore(db)
     assert store.has_symbol("one::f")
     assert not store.has_symbol("one::missing")
+
+
+def test_modules_importing_src_layout_alias(tmp_path, write_tree):
+    root = write_tree({
+        "src/clio/__init__.py": "",
+        "src/clio/core.py": "def f():\n    return 1\n",
+        "src/clio/main.py": "from clio.core import f\n",
+    })
+    db = tmp_path / "graph.db"
+    GraphStore(db).save(build_repo_graph(root))
+    assert GraphStore(db).modules_importing("src.clio.core") == ["src.clio.main"]
