@@ -1,3 +1,4 @@
+# pyproject.toml — full file
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -7,6 +8,7 @@ name = "clio"
 version = "0.1.0"
 description = "A repo analyzer with a visible nervous system"
 requires-python = ">=3.11"
+dependencies = ["httpx>=0.27"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -14,3 +16,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+asyncio_mode = "auto"

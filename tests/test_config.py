@@ -1,3 +1,4 @@
+# tests/test_config.py
 from clio.config import Limits, get_limits
 
 
@@ -28,3 +29,36 @@ def test_exclude_dirs_defaults():
     limits = get_limits()
     assert ".git" in limits.exclude_dirs
     assert "node_modules" in limits.exclude_dirs
+
+
+def test_harness_defaults():
+    limits = get_limits()
+    assert limits.max_tool_output_chars == 12_000
+    assert limits.max_file_read_chars == 8_000
+    assert limits.max_agent_steps == 10
+    assert limits.subagent_max_context_chars == 16_000
+    assert limits.max_concurrency == 4
+    assert limits.task_max_retries == 2
+    assert limits.task_backoff_s == 0.5
+    assert limits.cheap_model == "gemini-2.0-flash"
+    assert limits.frontier_model == "gemini-2.5-pro"
+
+
+def test_harness_env_overrides(monkeypatch):
+    monkeypatch.setenv("CLIO_MAX_AGENT_STEPS", "3")
+    monkeypatch.setenv("CLIO_MAX_CONCURRENCY", "2")
+    monkeypatch.setenv("CLIO_CHEAP_MODEL", "gemini-2.0-flash-lite")
+    monkeypatch.setenv("CLIO_TASK_BACKOFF_S", "0.1")
+    limits = get_limits()
+    assert limits.max_agent_steps == 3
+    assert limits.max_concurrency == 2
+    assert limits.cheap_model == "gemini-2.0-flash-lite"
+    assert limits.task_backoff_s == 0.1
+
+
+def test_harness_env_invalid_falls_back(monkeypatch):
+    monkeypatch.setenv("CLIO_MAX_AGENT_STEPS", "x")
+    monkeypatch.setenv("CLIO_TASK_BACKOFF_S", "y")
+    limits = get_limits()
+    assert limits.max_agent_steps == 10
+    assert limits.task_backoff_s == 0.5
