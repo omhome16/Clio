@@ -30,12 +30,14 @@ INDEX_HTML = """<!doctype html>
 <title>Clio — analysis dashboard</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23F4F0E6'/%3E%3Cpath d='M8 1.5v13M1.5 8h13' stroke='%231E50C8' stroke-width='2.5'/%3E%3C/svg%3E">
 <style>
-:root {
-  --paper:#F4F0E6; --paper-2:#ECE6D6; --ink:#26221B; --muted:#6F675A;
-  --rule:#D8D1C0; --blue:#1E50C8; --blue-d:#173CA0; --ok:#336B42; --bad:#B23A2D;
-}
+:root { color-scheme: light; }
+html[data-theme="light"] { --paper:#F4F0E6; --paper-2:#ECE6D6; --ink:#26221B;
+  --muted:#6F675A; --rule:#D8D1C0; --blue:#1E50C8; --blue-d:#173CA0;
+  --ok:#336B42; --bad:#B23A2D; }
+html[data-theme="dark"] { color-scheme: dark; --paper:#191512; --paper-2:#231F1A;
+  --ink:#EFE9DC; --muted:#A89F8E; --rule:#3B362C; --blue:#7FA5F5;
+  --blue-d:#9DB9F7; --ok:#7FB98F; --bad:#E07B6F; }
 * { box-sizing:border-box; }
-html { color-scheme:light; }
 body { margin:0; background:var(--paper); color:var(--ink);
        font:13px/1.6 ui-monospace,"Cascadia Mono",Consolas,monospace; }
 ::selection { background:var(--blue); color:var(--paper); }
@@ -92,6 +94,26 @@ button { width:100%; padding:11px 16px; background:var(--blue); color:var(--pape
 button:hover { background:var(--blue-d); border-color:var(--blue-d); }
 button:active { transform:translateY(1px); }
 button:disabled { opacity:.45; cursor:default; }
+.theme-btn { width:auto; padding:6px 12px; background:transparent;
+  color:var(--muted); border:1px solid var(--rule); font-size:11px; }
+.theme-btn:hover { color:var(--ink); border-color:var(--ink); }
+.ask { position:fixed; top:0; right:0; bottom:0; width:360px; max-width:92vw;
+  background:var(--paper); border-left:1px solid var(--rule); z-index:20;
+  transform:translateX(102%); transition:transform .18s ease-out;
+  display:flex; flex-direction:column; padding:18px 22px; }
+.ask.open { transform:none; box-shadow:-12px 0 32px rgba(0,0,0,.18); }
+.ask-head { display:flex; justify-content:space-between; align-items:center; }
+.ask-log { flex:1; overflow:auto; border:1px solid var(--rule); margin:10px 0;
+  padding:10px; display:flex; flex-direction:column; gap:8px; }
+.bubble { padding:7px 10px; border:1px solid var(--rule);
+  background:var(--paper-2); font-size:12px; white-space:pre-wrap; }
+.bubble.user { background:transparent; border-color:var(--blue); }
+.bubble.bad { border-color:var(--bad); color:var(--bad); }
+.tool-line { font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tool-line.ok::before { content:"\2699\00a0"; color:var(--ok); }
+.tool-line.bad::before { content:"\2715\00a0"; color:var(--bad); }
+#ask-q { margin-bottom:10px; }
 .state { margin-top:18px; border-top:1px solid var(--rule); }
 .state-row { display:flex; justify-content:space-between; gap:12px;
   padding:8px 2px; border-bottom:1px solid var(--rule); font-size:12px; }
@@ -146,6 +168,7 @@ footer { border-top:1px solid var(--rule); }
 @media (prefers-reduced-motion: reduce) {
   .lamp.running { animation:none; }
   .log-row { animation:none; }
+  .ask { transition:none; }
 }
 </style>
 </head>
@@ -157,6 +180,8 @@ footer { border-top:1px solid var(--rule); }
       <h1>CLIO<span class="sub">analysis dashboard</span></h1>
     </div>
     <div class="sys"><span class="lamp" id="lamp" aria-hidden="true"></span>
+      <button id="theme-btn" type="button" class="theme-btn" aria-label="Toggle dark mode">Theme</button>
+      <button id="ask-open" type="button" class="theme-btn">Ask &#9656;</button>
       mock provider · offline · zero dependencies</div>
   </div>
 </header>
@@ -190,6 +215,20 @@ footer { border-top:1px solid var(--rule); }
     <pre id="report">Select a job from the history table.</pre>
   </section>
 </main>
+<aside id="ask-panel" class="ask" aria-label="Ask about this analysis">
+  <div class="ask-head">
+    <h2 class="eyebrow" style="margin:0">Ask</h2>
+    <button id="ask-close" type="button" class="theme-btn" aria-label="Close ask panel">&#10005;</button>
+  </div>
+  <div id="ask-log" class="ask-log" role="log" aria-live="polite">
+    <div class="empty">Select a job in the history table, then ask about it.</div>
+  </div>
+  <form id="ask-form">
+    <label class="field-label" for="ask-q">Question</label>
+    <input type="text" id="ask-q" spellcheck="false" placeholder="e.g. what calls app.service::greet?">
+    <button id="ask-send" type="submit">Ask &#8594;</button>
+  </form>
+</aside>
 <footer>
   <div class="foot">
     <span>Clio — local analysis harness · events stream over SSE</span>
@@ -204,6 +243,67 @@ const stateEl = document.getElementById("state");
 const lampEl = document.getElementById("lamp");
 const countEl = document.getElementById("job-count");
 const liveTag = document.getElementById("live-tag");
+
+(function initTheme() {
+  const saved = localStorage.getItem("clio-theme");
+  const root = document.documentElement;
+  root.dataset.theme = saved ||
+    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.getElementById("theme-btn").addEventListener("click", () => {
+    root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+    localStorage.setItem("clio-theme", root.dataset.theme);
+  });
+})();
+
+const askPanel = document.getElementById("ask-panel");
+const askLog = document.getElementById("ask-log");
+const askForm = document.getElementById("ask-form");
+const askQ = document.getElementById("ask-q");
+const askSend = document.getElementById("ask-send");
+let activeJob = null;
+
+document.getElementById("ask-open").addEventListener("click", () => {
+  askPanel.classList.add("open");
+  askQ.focus();
+});
+document.getElementById("ask-close").addEventListener("click", () => {
+  askPanel.classList.remove("open");
+});
+
+function addBubble(text, cls) {
+  if (askLog.querySelector(".empty")) askLog.textContent = "";
+  const b = document.createElement("div");
+  b.className = "bubble" + (cls ? " " + cls : "");
+  b.textContent = text;
+  askLog.appendChild(b);
+  askLog.scrollTop = askLog.scrollHeight;
+}
+
+function addToolLine(name, args, ok) {
+  const t = document.createElement("div");
+  t.className = "tool-line " + (ok ? "ok" : "bad");
+  t.textContent = name + "(" + JSON.stringify(args).slice(0, 90) + ")";
+  askLog.appendChild(t);
+  askLog.scrollTop = askLog.scrollHeight;
+}
+
+askForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const q = askQ.value.trim();
+  if (!q || askSend.disabled || !activeJob) return;
+  askQ.value = "";
+  askSend.disabled = true;
+  addBubble(q, "user");
+  const es = new EventSource("/api/ask?job_id=" + encodeURIComponent(activeJob) +
+                             "&q=" + encodeURIComponent(q));
+  es.onmessage = (ev) => {
+    const p = JSON.parse(ev.data);
+    if (p.type === "ask.tool") addToolLine(p.data.tool, p.data.args, p.data.ok);
+    if (p.type === "ask.final") addBubble(p.data.answer, p.data.ok ? "" : "bad");
+  };
+  es.addEventListener("done", () => { es.close(); askSend.disabled = false; });
+  es.onerror = () => { es.close(); askSend.disabled = false; };
+});
 
 function setState(text, cls) {
   stateEl.textContent = text;
@@ -330,6 +430,7 @@ async function refreshJobs() {
 }
 
 async function showJob(jobId, tr) {
+  activeJob = jobId;
   const pre = document.getElementById("report");
   document.querySelectorAll("tr.selected").forEach((r) => r.classList.remove("selected"));
   if (tr) tr.classList.add("selected");

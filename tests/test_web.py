@@ -165,3 +165,11 @@ def test_api_ask_missing_question_400(dashboard, seed_job):
     dash, url = dashboard
     seed_job(dash.root, "job-1", "2026-08-10T00:00:00+00:00", {"a.py": ""})
     assert _get(url + "/api/ask?job_id=job-1")[0] == 400
+
+def test_index_theme_toggle_present(dashboard):
+    _, url = dashboard
+    status, body = _get(url + "/")
+    assert status == 200
+    assert "clio-theme" in body
+    assert "prefers-color-scheme" in body
+    assert 'data-theme="dark"' in body
