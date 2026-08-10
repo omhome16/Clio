@@ -169,3 +169,73 @@ def test_mock_handler_scripted():
         "cheap",
     )
     assert json.loads(out) == {"final": '{"findings": ["mock finding"]}'}
+# --- Groq provider + client factory (M7) ---
+from clio.llm import GroqClient, make_client
+
+
+async def test_groq_builds_expected_request(monkeypatch):
+    captured = {}
+
+    def fake_post(url, payload, timeout=60):
+        captured["url"] = url
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": "sure"}}]}
+
+    monkeypatch.setattr("clio.llm._post_json", fake_post)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    client = GroqClient()
+    out = await client.complete(
+        [LLMMessage("user", "hi")], model="llama-3.3-70b-versatile", max_tokens=7
+    )
+    assert out == "sure"
+    assert captured["url"] == "https://api.groq.com/openai/v1/chat/completions"
+    assert captured["payload"] == {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 7,
+    }
+
+
+async def test_groq_default_model(monkeypatch):
+    captured = {}
+
+    def fake_post(url, payload, timeout=60):
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": "x"}}]}
+
+    monkeypatch.setattr("clio.llm._post_json", fake_post)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    await GroqClient().complete([LLMMessage("user", "hi")])
+    assert captured["payload"]["model"] == "llama-3.3-70b-versatile"
+
+
+def test_groq_requires_key(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    with pytest.raises(LLMError):
+        GroqClient(api_key=None)
+
+
+def test_make_client_mock_default():
+    assert isinstance(make_client("mock"), MockLLM)
+
+
+def test_make_client_unknown_falls_back_to_mock(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    assert isinstance(make_client("wat"), MockLLM)
+
+
+def test_make_client_gemini(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    assert isinstance(make_client("gemini"), GeminiClient)
+
+
+def test_make_client_groq(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    assert isinstance(make_client("groq"), GroqClient)
+
+
+def test_make_client_groq_without_key_raises(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    with pytest.raises(LLMError):
+        make_client("groq")

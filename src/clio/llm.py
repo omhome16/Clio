@@ -121,6 +121,38 @@ class GeminiClient:
         )
 
 
+class GroqClient:
+    """OpenAI-compatible client for Groq's API (default: llama-3.3-70b-versatile)."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str = "https://api.groq.com/openai/v1",
+    ):
+        load_env()
+        self._api_key = api_key or os.environ.get("GROQ_API_KEY")
+        if not self._api_key:
+            raise LLMError("GROQ_API_KEY is not set")
+        self._base_url = base_url.rstrip("/")
+
+    async def complete(
+        self,
+        messages: list[LLMMessage],
+        *,
+        model: str | None = None,
+        max_tokens: int = 2000,
+    ) -> str:
+        model = model or "llama-3.3-70b-versatile"
+        payload = {
+            "model": model,
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "max_tokens": max_tokens,
+        }
+        url = f"{self._base_url}/chat/completions"
+        data = await asyncio.to_thread(_post_json, url, payload)
+        return data["choices"][0]["message"]["content"]
+
+
 @dataclass(frozen=True)
 class ToolCall:
     tool: str
@@ -162,3 +194,14 @@ def parse_reply(text: str) -> LLMReply:
         if "final" in obj:
             return LLMReply(kind="final", final=str(obj["final"]))
     return LLMReply(kind="none")
+
+
+def make_client(provider: str, limits: Limits | None = None) -> LLMClient:
+    """Build the client for ``provider`` (mock | gemini | groq); unknown
+    names fall back to the mock client."""
+    load_env()
+    if provider == "gemini":
+        return GeminiClient()
+    if provider == "groq":
+        return GroqClient()
+    return MockLLM(handler=mock_handler(limits or get_limits()))
