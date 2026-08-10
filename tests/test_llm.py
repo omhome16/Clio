@@ -64,3 +64,108 @@ def test_gemini_requires_key(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(LLMError):
         GeminiClient(api_key=None)
+
+
+# --- HTTP plumbing and Gemini over urllib (M7) ---
+import io
+import json
+import urllib.error
+
+from clio.config import get_limits
+from clio.llm import GeminiClient, LLMError, LLMMessage, _post_json, mock_handler
+
+
+def test_post_json_sends_expected_request(monkeypatch):
+    captured = {}
+
+    class FakeResp:
+        def __init__(self, body: bytes):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return self._body
+
+    def fake_urlopen(req, timeout=60):
+        captured["method"] = req.get_method()
+        captured["url"] = req.full_url
+        captured["body"] = req.data
+        captured["content_type"] = req.headers["Content-Type"]
+        return FakeResp(b'{"ok": true}')
+
+    monkeypatch.setattr("clio.llm.urllib.request.urlopen", fake_urlopen)
+    result = _post_json("https://api.test/v1/x", {"a": 1})
+    assert result == {"ok": True}
+    assert captured["url"] == "https://api.test/v1/x"
+    assert captured["method"] == "POST"
+    assert captured["body"] == b'{"a": 1}'
+    assert captured["content_type"] == "application/json"
+
+
+def test_post_json_http_error_raises_llm_error(monkeypatch):
+    def boom(req, timeout=60):
+        raise urllib.error.HTTPError(
+            "https://api.test/v1/x", 429, "Too Many Requests", None,
+            io.BytesIO(b"rate limited"),
+        )
+
+    monkeypatch.setattr("clio.llm.urllib.request.urlopen", boom)
+    with pytest.raises(LLMError, match="429"):
+        _post_json("https://api.test/v1/x", {})
+
+
+def test_post_json_network_error_raises_llm_error(monkeypatch):
+    def boom(req, timeout=60):
+        raise urllib.error.URLError("boom")
+
+    monkeypatch.setattr("clio.llm.urllib.request.urlopen", boom)
+    with pytest.raises(LLMError, match="boom"):
+        _post_json("https://api.test/v1/x", {})
+
+
+async def test_gemini_builds_expected_request(monkeypatch):
+    captured = {}
+
+    def fake_post(url, payload, timeout=60):
+        captured["url"] = url
+        captured["payload"] = payload
+        return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+    monkeypatch.setattr("clio.llm._post_json", fake_post)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    client = GeminiClient()
+    out = await client.complete(
+        [LLMMessage("user", "hello"), LLMMessage("model", "hi")], max_tokens=42
+    )
+    assert out == "ok"
+    assert captured["payload"]["contents"] == [
+        {"role": "user", "parts": [{"text": "hello"}]},
+        {"role": "model", "parts": [{"text": "hi"}]},
+    ]
+    assert captured["payload"]["generationConfig"] == {"maxOutputTokens": 42}
+    assert captured["url"].startswith(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=test-key"
+    )
+
+
+async def test_gemini_joins_multi_part_text(monkeypatch):
+    def fake_post(url, payload, timeout=60):
+        return {"candidates": [{"content": {"parts": [{"text": "a "}, {"text": "b"}]}}]}
+
+    monkeypatch.setattr("clio.llm._post_json", fake_post)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    assert await GeminiClient().complete([LLMMessage("user", "x")]) == "a b"
+
+
+def test_mock_handler_scripted():
+    handler = mock_handler(get_limits())
+    out = handler(
+        [LLMMessage("user", "a"), LLMMessage("model", "b"), LLMMessage("user", "c")],
+        "cheap",
+    )
+    assert json.loads(out) == {"final": '{"findings": ["mock finding"]}'}

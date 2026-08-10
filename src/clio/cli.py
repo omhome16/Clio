@@ -7,20 +7,10 @@ import json
 from clio.config import Limits, get_limits
 from clio.events import Event, EventBus, SseFormatter
 from clio.impact import impact_of_symbol
-from clio.llm import LLMMessage, MockLLM
+from clio.llm import MockLLM, mock_handler as _mock_handler
 from clio.reports import ReportArchive
 from clio.orchestrator import Orchestrator
 from clio.sandbox import Sandbox
-
-
-def _mock_handler(limits: Limits):
-    def handler(messages: list[LLMMessage], model: str | None) -> str:
-        if model == limits.frontier_model:
-            return json.dumps({"final": '{"summary": "merged", "modules": ["core"]}'})
-        if len(messages) < 3:
-            return json.dumps({"tool": "list_tree", "args": {}})
-        return json.dumps({"final": '{"findings": ["mock finding"]}'})
-    return handler
 
 
 def build_parser() -> argparse.ArgumentParser:

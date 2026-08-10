@@ -1,9 +1,14 @@
 """Model-agnostic LLM client interface, mock, and Gemini implementation."""
+import asyncio
 import json
 import os
 import re
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Callable, Literal, Protocol
+
+from clio.config import Limits, get_limits, load_env
 
 
 class LLMError(RuntimeError):
@@ -51,11 +56,46 @@ class MockLLM:
         return self._responses.pop(0)
 
 
+def _post_json(url: str, payload: dict, timeout: int = 60) -> dict:
+    """POST a JSON payload and return the parsed JSON response.
+
+    Synchronous by design; async callers wrap it in ``asyncio.to_thread``.
+    """
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+    )
+    req.headers["Content-Type"] = "application/json"
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as err:
+        body = err.read().decode("utf-8", errors="replace")[:500]
+        raise LLMError(f"LLM API error {err.code} from {url}: {body}") from err
+    except urllib.error.URLError as err:
+        raise LLMError(f"LLM API request to {url} failed: {err.reason}") from err
+
+
+def mock_handler(limits: Limits):
+    def handler(messages: list[LLMMessage], model: str | None) -> str:
+        if model == limits.frontier_model:
+            return json.dumps({"final": '{"summary": "merged", "modules": ["core"]}'})
+        if len(messages) < 3:
+            return json.dumps({"tool": "list_tree", "args": {}})
+        return json.dumps({"final": '{"findings": ["mock finding"]}'})
+    return handler
+
+
 class GeminiClient:
-    def __init__(self, api_key: str | None = None) -> None:
-        self._key = api_key or os.environ.get("GEMINI_API_KEY")
-        if not self._key:
+    """Gemini REST client using only the stdlib (``urllib``)."""
+
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        load_env()
+        self._api_key = api_key or os.environ.get("GEMINI_API_KEY")
+        if not self._api_key:
             raise LLMError("GEMINI_API_KEY is not set")
+        self._base_url = base_url or "https://generativelanguage.googleapis.com/v1beta"
 
     async def complete(
         self,
@@ -64,27 +104,21 @@ class GeminiClient:
         model: str | None = None,
         max_tokens: int = 2000,
     ) -> str:
-        try:
-            import httpx
-        except ImportError as exc:
-            raise LLMError("httpx is required for GeminiClient") from exc
         model = model or "gemini-2.0-flash"
         payload = {
             "contents": [
-                {"role": m.role, "parts": [{"text": m.content}]} for m in messages
+                {"role": "user" if m.role == "user" else "model",
+                 "parts": [{"text": m.content}]}
+                for m in messages
             ],
             "generationConfig": {"maxOutputTokens": max_tokens},
         }
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{model}:generateContent?key={self._key}"
+        url = f"{self._base_url}/models/{model}:generateContent?key={self._api_key}"
+        data = await asyncio.to_thread(_post_json, url, payload)
+        return "".join(
+            part.get("text", "")
+            for part in data["candidates"][0]["content"]["parts"]
         )
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-        parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
-        return "".join(part.get("text", "") for part in parts)
 
 
 @dataclass(frozen=True)
