@@ -143,7 +143,7 @@ def _recall(extracted: set, expected: set) -> float:
 def evaluate_case(case: GoldenCase, root: Path) -> EvalResult:
     root = Path(root)
     job_id = f"eval-{case.name}"
-    graph = _build_graph(case.files, root / "repo")
+    graph = _build_graph(case.files, root / "repo" / case.name)
     (root / "jobs").mkdir(parents=True, exist_ok=True)
     GraphStore(root / "jobs" / f"{job_id}.graph.db").save(graph)
     extracted_symbols = _symbol_ids(graph)

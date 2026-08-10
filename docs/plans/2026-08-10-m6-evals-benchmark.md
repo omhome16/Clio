@@ -112,6 +112,10 @@ def test_golden_suite_aggregates(tmp_path):
     results = run_golden_suite(tmp_path)
     assert [r.case for r in results] == ["toy", "nested", "regression"]
     assert all(r.passed for r in results)
+    assert all(
+        r.metrics["symbol_precision"] == 1.0 and r.metrics["edge_precision"] == 1.0
+        for r in results
+    )
 
 
 def test_eval_main_prints_table(tmp_path, capsys):
@@ -277,7 +281,7 @@ def _recall(extracted: set, expected: set) -> float:
 def evaluate_case(case: GoldenCase, root: Path) -> EvalResult:
     root = Path(root)
     job_id = f"eval-{case.name}"
-    graph = _build_graph(case.files, root / "repo")
+    graph = _build_graph(case.files, root / "repo" / case.name)
     (root / "jobs").mkdir(parents=True, exist_ok=True)
     GraphStore(root / "jobs" / f"{job_id}.graph.db").save(graph)
     extracted_symbols = _symbol_ids(graph)

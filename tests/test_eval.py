@@ -47,6 +47,10 @@ def test_golden_suite_aggregates(tmp_path):
     results = run_golden_suite(tmp_path)
     assert [r.case for r in results] == ["toy", "nested", "regression"]
     assert all(r.passed for r in results)
+    assert all(
+        r.metrics["symbol_precision"] == 1.0 and r.metrics["edge_precision"] == 1.0
+        for r in results
+    )
 
 
 def test_eval_main_prints_table(tmp_path, capsys):
