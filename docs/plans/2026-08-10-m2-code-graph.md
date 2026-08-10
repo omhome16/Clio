@@ -3,7 +3,7 @@
 - Date: 2026-08-10
 - Branch: `feat/m2-code-graph`
 - Precondition: M0 + M1 merged to `main` (82 tests passing)
-- Target: 112 tests passing (82 + 11 graph + 9 store + 7 clustering + 3 integration)
+- Target: 113 tests passing (82 + 12 graph + 9 store + 7 clustering + 3 integration)
 - Offline-friendly: zero network tests, zero new dependencies (stdlib `ast` + `sqlite3`)
 
 ## What M2 delivers
@@ -183,7 +183,7 @@ def test_intra_module_call_edge(tmp_path, write_tree):
                   "def alpha():\n    return gamma()\n",
     })
     graph = build_repo_graph(root)
-    assert graph.calls == [CallEdge(caller="one::alpha", callee="one::gamma", line=4)]
+    assert graph.calls == [CallEdge(caller="one::alpha", callee="one::gamma", line=5)]
 
 
 def test_self_method_call_edge(tmp_path, write_tree):
@@ -228,7 +228,7 @@ def test_private_and_external_calls(tmp_path, write_tree):
                   "    return os.getcwd()\n",
     })
     graph = build_repo_graph(root)
-    assert graph.calls == [CallEdge(caller="one::alpha", callee="os.getcwd", line=5)]
+    assert graph.calls == [CallEdge(caller="one::alpha", callee="os.getcwd", line=6)]
 
 
 def test_parse_error_skipped_and_recorded(tmp_path, write_tree):
@@ -385,7 +385,9 @@ class _ModuleVisitor(ast.NodeVisitor):
         self.calls: list[CallEdge] = []
 
     def _caller(self) -> str:
-        return "::".join([self.module, *self._scope])
+        # "module::Class.method" for methods, "module::func" for functions,
+        # "module" for module-level calls (dotted scope join, not "::").
+        return "::".join([self.module, ".".join(self._scope)])
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -478,7 +480,6 @@ def build_repo_graph(root: Path) -> RepoGraph:
         module = module_name_for(path, root)
         if not module:
             continue
-        graph.modules[module] = str(path.relative_to(root))
         try:
             symbols, imports, calls = parse_module(
                 path.read_text(encoding="utf-8", errors="replace"), module
@@ -486,16 +487,17 @@ def build_repo_graph(root: Path) -> RepoGraph:
         except SyntaxError:
             graph.skipped.append(str(path.relative_to(root)))
             continue
+        graph.modules[module] = str(path.relative_to(root))
         graph.symbols.extend(symbols)
         graph.imports[module] = sorted(imports)
         graph.calls.extend(calls)
     return graph
 ```
 
-### Step 5: Run — verify 11 passed
+### Step 5: Run — verify 12 passed
 
 Run: `python -m pytest tests/test_graph.py -v`
-Expected: 11 passed.
+Expected: 12 passed.
 
 ### Step 6: Commit
 
@@ -550,7 +552,7 @@ def test_callers_of(tmp_path, write_tree):
     })
     db = tmp_path / "graph.db"
     GraphStore(db).save(build_repo_graph(root))
-    assert GraphStore(db).callers_of("a::f") == [("a::g", 4)]
+    assert GraphStore(db).callers_of("a::f") == [("a::g", 5)]
 
 
 def test_callees_of(tmp_path, write_tree):
@@ -559,7 +561,7 @@ def test_callees_of(tmp_path, write_tree):
     })
     db = tmp_path / "graph.db"
     GraphStore(db).save(build_repo_graph(root))
-    assert GraphStore(db).callees_of("a::g") == [("a::f", 4)]
+    assert GraphStore(db).callees_of("a::g") == [("a::f", 5)]
 
 
 def test_modules_importing(tmp_path, write_tree):
@@ -713,7 +715,7 @@ class GraphStore:
                     "SELECT name, kind, module, line FROM symbols ORDER BY rowid"
                 )
             ]
-            imports: dict[str, list[str]] = {}
+            imports: dict[str, list[str]] = {m: [] for m in modules}
             for src, target in conn.execute(
                 "SELECT src, target FROM imports ORDER BY src, target"
             ):
@@ -1111,7 +1113,7 @@ then `git commit -m "feat: graph phase in orchestrator with graphed event"`
 
 ## Full-suite verification
 
-- [ ] Run `python -m pytest -q` — expected **112 passed** (82 + 11 graph + 9 store + 7 clustering + 3 integration = 112). All offline; no network tests in M2.
+- [ ] Run `python -m pytest -q` — expected **113 passed** (82 + 12 graph + 9 store + 7 clustering + 3 integration = 113). All offline; no network tests in M2.
 - [ ] Manual demo (no API key needed):
 
 ```bash
