@@ -378,11 +378,11 @@ from clio.sandbox import Sandbox
 from clio.tools import Tool, ToolRegistry
 
 
-def _make_registry(tmp_path, job_id="job-x", **kwargs):
+def _make_registry(tmp_path, job_id="job-x", tools=None, **limits_kwargs):
     sandbox = Sandbox(root=tmp_path / "sandbox")
     sandbox.create_workspace(job_id)
-    limits = Limits(workspace_root=tmp_path / "sandbox", **kwargs)
-    return ToolRegistry(sandbox, job_id, limits=limits)
+    limits = Limits(workspace_root=tmp_path / "sandbox", **limits_kwargs)
+    return ToolRegistry(sandbox, job_id, tools=tools, limits=limits)
 
 
 def test_read_file_ok(tmp_path):
@@ -560,7 +560,7 @@ class ToolRegistry:
     ) -> None:
         self._sandbox = sandbox
         self.job_id = job_id
-        self._tools = {tool.name: tool for tool in tools}
+        self._tools = {tool.name: tool for tool in (tools or BUILTIN_TOOLS)}
         self._limits = limits or get_limits()
 
     @property
@@ -583,7 +583,10 @@ class ToolRegistry:
             if raw is None:
                 return ToolResult(ok=False, error=f"missing required arg '{tool.path_arg}'")
             try:
-                resolved[tool.path_arg] = str(self._sandbox.ensure_contained(raw))
+                # Resolve relative to the WORKSPACE (never the process CWD).
+                resolved[tool.path_arg] = str(
+                    self._sandbox.ensure_contained(self.workspace / raw)
+                )
             except PathViolation as exc:
                 return ToolResult(ok=False, error=f"path escapes sandbox: {exc}")
         try:
@@ -679,23 +682,23 @@ def test_parse_empty_is_none():
     assert parse_reply("").kind == "none"
 
 
-def test_mock_llm_pops_scripted():
+async def test_mock_llm_pops_scripted():
     mock = MockLLM(responses=["one", "two"])
-    out1 = mock.complete([LLMMessage(role="user", content="hi")], model="m")
-    out2 = mock.complete([LLMMessage(role="user", content="hi")], model="m")
+    out1 = await mock.complete([LLMMessage(role="user", content="hi")], model="m")
+    out2 = await mock.complete([LLMMessage(role="user", content="hi")], model="m")
     assert (out1, out2) == ("one", "two")
     assert len(mock.calls) == 2
 
 
-def test_mock_llm_exhausted_raises():
+async def test_mock_llm_exhausted_raises():
     mock = MockLLM(responses=[])
     with pytest.raises(LLMError):
-        mock.complete([LLMMessage(role="user", content="hi")])
+        await mock.complete([LLMMessage(role="user", content="hi")])
 
 
-def test_mock_llm_handler_mode():
+async def test_mock_llm_handler_mode():
     mock = MockLLM(handler=lambda messages, model: f"handled-{model}")
-    out = mock.complete([LLMMessage(role="user", content="hi")], model="cheap")
+    out = await mock.complete([LLMMessage(role="user", content="hi")], model="cheap")
     assert out == "handled-cheap"
 
 
@@ -832,6 +835,9 @@ def parse_reply(text: str) -> LLMReply:
     try:
         obj = json.loads(cleaned)
     except json.JSONDecodeError:
+        # Unparseable: JSON-ish garbage is "none"; plain prose is a final answer.
+        if "{" in cleaned:
+            return LLMReply(kind="none")
         return LLMReply(kind="final", final=cleaned)
     if isinstance(obj, dict):
         if "tool" in obj:
@@ -894,58 +900,58 @@ def _agent(mock, tmp_path, **kwargs):
     return Subagent(SPEC, mock, registry, job_id="j", **kwargs)
 
 
-def test_tool_loop_then_final(tmp_path):
+async def test_tool_loop_then_final(tmp_path):
     mock = MockLLM(responses=[
         json.dumps({"tool": "list_tree", "args": {}}),
         json.dumps({"final": "all good"}),
     ])
     agent = _agent(mock, tmp_path)
-    report = agent.run("analyze")
+    report = await agent.run("analyze")
     assert report.ok and report.content == "all good"
     assert report.tool_calls == 1 and report.steps == 2
     tool_msg = mock.calls[1][-1]
     assert tool_msg.role == "tool"
 
 
-def test_tool_error_loops_back_and_recovers(tmp_path):
+async def test_tool_error_loops_back_and_recovers(tmp_path):
     mock = MockLLM(responses=[
         json.dumps({"tool": "read_file", "args": {"path": "missing.txt"}}),
         json.dumps({"final": "recovered"}),
     ])
     agent = _agent(mock, tmp_path)
-    report = agent.run("x")
+    report = await agent.run("x")
     assert report.ok and report.content == "recovered"
     error_msg = mock.calls[1][-1]
     assert error_msg.role == "tool" and "error" in error_msg.content.lower() or "no such" in error_msg.content.lower()
 
 
-def test_max_steps_caps_and_marks_not_ok(tmp_path):
+async def test_max_steps_caps_and_marks_not_ok(tmp_path):
     responses = [json.dumps({"tool": "list_tree", "args": {}})] * 10
     mock = MockLLM(responses=responses)
     agent = _agent(mock, tmp_path, max_steps=3)
-    report = agent.run("x")
+    report = await agent.run("x")
     assert not report.ok and report.steps == 3
     assert "max steps" in report.content
 
 
-def test_events_emitted(tmp_path):
+async def test_events_emitted(tmp_path):
     bus = EventBus()
     seen = []
     bus.subscribe(seen.append)
     mock = MockLLM(responses=[json.dumps({"tool": "list_tree", "args": {}}), json.dumps({"final": "ok"})])
     agent = _agent(mock, tmp_path, bus=bus)
-    agent.run("x")
+    await agent.run("x")
     types = [e.type for e in seen]
     assert types[0] == EVENT_SUBAGENT_START
     assert EVENT_SUBAGENT_TOOL in types
     assert types[-1] == EVENT_SUBAGENT_DONE
 
 
-def test_compaction_trims_context(tmp_path):
+async def test_compaction_trims_context(tmp_path):
     mock = MockLLM(handler=lambda messages, model: json.dumps({"final": "done"}))
     agent = _agent(mock, tmp_path, max_context_chars=200)
     big = "x" * 10_000
-    report = agent.run(big)
+    report = await agent.run(big)
     assert report.ok
     compacted = [m for m in mock.calls[0] if "dropped to fit budget" in m.content]
     assert compacted
@@ -1159,7 +1165,7 @@ async def test_fan_out_captures_failures():
 async def test_run_with_retries_eventually_succeeds():
     calls = {"n": 0}
 
-    def worker():
+    async def worker():
         calls["n"] += 1
         if calls["n"] < 3:
             raise RuntimeError("flaky")
@@ -1712,7 +1718,7 @@ git commit -m "feat: headless cli demo with live event stream"
 
 ## Full-suite verification
 
-- [ ] Run `python -m pytest -q` — expected 87 passed total (36 existing + 8 config + 5 events + 10 tools + 11 llm + 5 subagent + 6 scheduler + 3 orchestrator + 3 cli = 87). Offline machines lose the 2 network tests (clone bad-source, orchestrator failed-clone): expect 85 on those.
+- [ ] Run `python -m pytest -q` — expected 82 passed total (36 existing − 4 old config + 7 new config + 5 events + 10 tools + 11 llm + 5 subagent + 6 scheduler + 3 orchestrator + 3 cli = 82). Offline machines lose the 2 network tests (clone bad-source, orchestrator failed-clone): expect 80 on those.
 - [ ] Manual demo (no API key needed):
 
 ```bash
