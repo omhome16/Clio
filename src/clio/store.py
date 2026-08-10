@@ -73,14 +73,14 @@ class GraphStore:
                 sorted(graph.modules.items()),
             )
             conn.executemany(
-                "INSERT INTO symbols(id, name, kind, module, line) VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO symbols(id, name, kind, module, line) VALUES (?, ?, ?, ?, ?)",
                 [
                     (f"{s.module}::{s.name}", s.name, s.kind, s.module, s.line)
                     for s in graph.symbols
                 ],
             )
             conn.executemany(
-                "INSERT INTO imports(src, target) VALUES (?, ?)",
+                "INSERT OR IGNORE INTO imports(src, target) VALUES (?, ?)",
                 [
                     (src, target)
                     for src, targets in graph.imports.items()

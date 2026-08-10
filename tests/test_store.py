@@ -1,6 +1,22 @@
 # tests/test_store.py
-from clio.graph import RepoGraph, build_repo_graph
+from clio.graph import RepoGraph, Symbol, build_repo_graph
 from clio.store import GraphStore
+
+
+def test_save_dedupes_repeated_imports_and_symbols(tmp_path):
+    graph = RepoGraph(
+        root=str(tmp_path),
+        modules={"a": "a.py"},
+        imports={"a": ["os", "os", "json"]},
+        symbols=[
+            Symbol(name="f", kind="function", module="a", line=1),
+            Symbol(name="f", kind="function", module="a", line=4),
+        ],
+    )
+    db = tmp_path / "graph.db"
+    GraphStore(db).save(graph)
+    assert GraphStore(db).module_imports("a") == ["json", "os"]
+    assert GraphStore(db).stats() == {"modules": 1, "symbols": 1, "imports": 2, "calls": 0}
 
 
 def test_save_load_roundtrip(tmp_path, write_tree):
