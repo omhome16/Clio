@@ -3,7 +3,7 @@
 - Date: 2026-08-10
 - Branch: `feat/m2-code-graph`
 - Precondition: M0 + M1 merged to `main` (82 tests passing)
-- Target: 113 tests passing (82 + 12 graph + 9 store + 7 clustering + 3 integration)
+- Target: 112 tests passing (82 baseline + 12 graph + 9 store + 7 clustering + 2 new integration; the CLI e2e test extends an existing M1 test, not a new one)
 - Offline-friendly: zero network tests, zero new dependencies (stdlib `ast` + `sqlite3`)
 
 ## What M2 delivers
@@ -1113,7 +1113,7 @@ then `git commit -m "feat: graph phase in orchestrator with graphed event"`
 
 ## Full-suite verification
 
-- [ ] Run `python -m pytest -q` — expected **113 passed** (82 + 12 graph + 9 store + 7 clustering + 3 integration = 113). All offline; no network tests in M2.
+- [ ] Run `python -m pytest -q` — expected **112 passed** (82 baseline + 12 graph + 9 store + 7 clustering + 2 new integration = 112; the CLI e2e test extends an existing M1 test). All offline; no network tests in M2.
 - [ ] Manual demo (no API key needed):
 
 ```bash

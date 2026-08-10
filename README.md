@@ -83,7 +83,7 @@ Details: see `blueprint.md` (not tracked — ask the author).
 | Blueprint | ✅ Done |
 | M0 — sandbox + clone + tree tools | ✅ Done |
 | M1 — harness runtime (events, tools, subagents, scheduler, orchestrator, CLI) | ✅ Done |
-| M2 — code graph | Planned |
+| M2 — code graph (extraction, SQLite store, clustering) | ✅ Done |
 | M3 — synthesis + persistence | Planned |
 | M4 — impact analysis | Planned |
 | M5 — frontend | Planned |
