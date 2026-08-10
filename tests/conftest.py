@@ -1,9 +1,13 @@
 """Shared fixtures for Clio tests."""
+import json
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from clio.graph import build_repo_graph
+from clio.store import GraphStore
 
 
 @pytest.fixture
@@ -49,3 +53,19 @@ def local_repo(tmp_path: Path) -> Path:
         cwd=repo, check=True, capture_output=True,
     )
     return repo
+
+
+@pytest.fixture
+def seed_job(write_tree):
+    """Seed a persisted job: graph.db + report.json for one job_id."""
+    def _seed(root: Path, job_id: str, created_at: str, files: dict[str, str]) -> None:
+        graph = build_repo_graph(write_tree(files))
+        jobs = root / "jobs"
+        jobs.mkdir(parents=True, exist_ok=True)
+        GraphStore(jobs / f"{job_id}.graph.db").save(graph)
+        report = {
+            "job_id": job_id, "repo_url": "https://github.com/x/y.git",
+            "summary": "merged", "created_at": created_at,
+        }
+        (jobs / f"{job_id}.report.json").write_text(json.dumps(report), encoding="utf-8")
+    return _seed

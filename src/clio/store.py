@@ -165,3 +165,10 @@ class GraphStore:
                 "SELECT id FROM symbols WHERE module = ? ORDER BY name", (module,)
             ).fetchall()
         return [row[0] for row in rows]
+
+    def has_symbol(self, symbol_id: str) -> bool:
+        with self._session() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM symbols WHERE id = ?", (symbol_id,)
+            ).fetchone()
+        return row is not None

@@ -88,3 +88,12 @@ def test_empty_graph_roundtrip(tmp_path):
     GraphStore(db).save(graph)
     assert GraphStore(db).load() == graph
     assert GraphStore(db).stats() == {"modules": 0, "symbols": 0, "imports": 0, "calls": 0}
+
+
+def test_has_symbol(tmp_path, write_tree):
+    root = write_tree({"one.py": "def f():\n    return 1\n"})
+    db = tmp_path / "graph.db"
+    GraphStore(db).save(build_repo_graph(root))
+    store = GraphStore(db)
+    assert store.has_symbol("one::f")
+    assert not store.has_symbol("one::missing")
