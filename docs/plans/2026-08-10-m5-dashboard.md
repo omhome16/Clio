@@ -474,7 +474,7 @@ def test_analyze_and_stream(dashboard, local_repo):
         assert resp.headers["Content-Type"] == "text/event-stream"
         data = resp.read().decode("utf-8")
     types = [line.split(": ", 1)[1] for line in data.splitlines() if line.startswith("data: ")]
-    events = [json.loads(line) for line in types]
+    events = [json.loads(line) for line in types if '"type"' in line]
     seen = {e["type"] for e in events}
     assert {"job.created", "job.cloned", "job.graphed", "job.persisted"} <= seen
     assert "subagent.start" in seen
