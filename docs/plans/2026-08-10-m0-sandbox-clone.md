@@ -377,6 +377,7 @@ from clio.tree import TreeLimitError, WorkspaceStats, list_tree, workspace_stats
 
 
 def _make_fixture(root: Path) -> Path:
+    root.mkdir()
     (root / "src").mkdir()
     (root / "src" / "app.py").write_text("print('a')\n" * 20)
     (root / "src" / "core").mkdir()
