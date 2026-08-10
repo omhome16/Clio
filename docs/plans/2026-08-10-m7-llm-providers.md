@@ -672,8 +672,10 @@ git commit -m "feat(cli,web): wire provider factory, drop httpx, add .env.exampl
 
 ## Final review
 
+> **Executed as part of M7 (commit log in order):** `9d97c54` Task 1 → `fd24cf1` Task 2 → `396357e` Task 3 → `2da3ae3` Task 4 (bundled a 3-line env-leak cleanup in `tests/test_config.py`, discovered when web tests began honoring `CLIO_PROVIDER`) → `4841ee3` `fix(store): dedupe repeated imports and symbols on graph save` (pre-existing M2 bug surfaced by the M7 demo run: repeated `import` statements in a real repo violated the `imports` PK; regression test `test_save_dedupes_repeated_imports_and_symbols` added, 170 total).
+
 - [ ] **Step 1: `git log --oneline`** — four M7 commits present: `feat(config): add .env loader and provider resolution` → `feat(llm): stdlib HTTP layer and urllib Gemini client` → `feat(llm): add Groq provider and make_client factory` → `feat(cli,web): wire provider factory, drop httpx, add .env.example`
-- [ ] **Step 2: Full suite** — `python -m pytest -q` → 169 passed
+- [ ] **Step 2: Full suite** — `python -m pytest -q` → 170 passed (169 M7 + 1 regression test for the store fix, see below)
 - [ ] **Step 3: Dependency check** — `pip show httpx` reports not-installed (or the project installs cleanly with `dependencies = []`); `python -c "import clio.llm, clio.cli, clio.web"` imports cleanly with no network access
 - [ ] **Step 4: Manual CLI demo** — `python -m clio.cli --help` shows `--provider {mock,gemini,groq}` defaulting to `mock`; with `CLIO_PROVIDER=groq` and `GROQ_API_KEY` set, `python -m clio build https://github.com/omhome16/Clio.git` runs against Groq (skip if no key — mock path must run identically)
 - [ ] **Step 5: Update README** — append `| M7 — LLM providers (.env config, urllib Gemini, Groq client) | ✅ Done |` to the milestone table in `README.md`; commit `docs: mark M7 done`

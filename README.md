@@ -88,6 +88,7 @@ Details: see `blueprint.md` (not tracked — ask the author).
 | M4 — impact analysis | ✅ Done |
 | M5 — frontend (zero-dependency live dashboard: SSE stream + archive API) | ✅ Done |
 | M6 — evals + benchmark (golden repo suite, deterministic graders, phase timing) | ✅ Done |
+| M7 — LLM providers (.env config, urllib Gemini, Groq client, provider factory) | ✅ Done |
 
 Project-based learning, built in public. No deadline — depth first.
 
