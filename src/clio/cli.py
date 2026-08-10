@@ -6,7 +6,9 @@ import json
 
 from clio.config import Limits, get_limits
 from clio.events import Event, EventBus, SseFormatter
+from clio.impact import impact_of_symbol
 from clio.llm import LLMMessage, MockLLM
+from clio.reports import ReportArchive
 from clio.orchestrator import Orchestrator
 from clio.sandbox import Sandbox
 
@@ -29,6 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="LLM provider (default: mock, no API key needed)",
     )
     parser.add_argument("--job-id", default=None, help="override the generated job id")
+    parser.add_argument(
+        "--impact", default=None,
+        help="symbol id (module::name) to run impact analysis for; prints IMPACT instead of REPORT",
+    )
     return parser
 
 
@@ -44,8 +50,14 @@ async def amain(args: argparse.Namespace) -> int:
         client = MockLLM(handler=_mock_handler(limits))
     orchestrator = Orchestrator(sandbox, client, bus=bus, limits=limits)
     report = await orchestrator.run(args.url, root=sandbox.root, job_id=args.job_id)
-    print("REPORT:")
-    print(json.dumps(report.to_dict(), indent=2))
+    if args.impact:
+        archive = ReportArchive(sandbox.root)
+        impact = impact_of_symbol(archive, report.job_id, args.impact)
+        print("IMPACT:")
+        print(json.dumps(impact.to_dict(), indent=2))
+    else:
+        print("REPORT:")
+        print(json.dumps(report.to_dict(), indent=2))
     return 0
 
 
