@@ -87,7 +87,7 @@ Details: see `blueprint.md` (not tracked — ask the author).
 | M3 — synthesis + persistence (report archive) | ✅ Done |
 | M4 — impact analysis | ✅ Done |
 | M5 — frontend (zero-dependency live dashboard: SSE stream + archive API) | ✅ Done |
-| M6 — evals + benchmark | Planned |
+| M6 — evals + benchmark (golden repo suite, deterministic graders, phase timing) | ✅ Done |
 
 Project-based learning, built in public. No deadline — depth first.
 
