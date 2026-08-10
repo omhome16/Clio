@@ -90,6 +90,7 @@ Details: see `blueprint.md` (not tracked — ask the author).
 | M6 — evals + benchmark (golden repo suite, deterministic graders, phase timing) | ✅ Done |
 | M7 — LLM providers (.env config, urllib Gemini, Groq client, provider factory) | ✅ Done |
 | M8 — agentic Ask panel (chat over sandboxed tools, SSE) + theme system | ✅ Done |
+| M9 — architecture map (deterministic SVG module map, hover tracing, impact mode) | ✅ Done |
 
 Project-based learning, built in public. No deadline — depth first.
 

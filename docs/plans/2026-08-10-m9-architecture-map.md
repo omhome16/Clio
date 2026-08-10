@@ -82,21 +82,32 @@ Code:
 - Symbols per module: `sum(1 for s in graph.symbols if s.module == module)`.
 - Export `COL_W`, `ROW_H` constants for tests.
 
-Tests (4):
+Tests (4 + 1):
 1. `test_layout_is_deterministic` — same graph twice → identical payload.
 2. `test_layout_columns_match_clusters` — modules of one cluster share x; different
    clusters have different columns; cluster order = sorted names.
 3. `test_layout_nodes_carry_metadata` — node has id/module/cluster/symbols/x/y; y
    strictly increases with module name order within a column.
-4. `test_layout_edges_imports_calls_and_dedupe` — fixture repo with an import, a
-   resolved call, a self-import (skipped), and a pair with both kinds → edge set
+4. `test_layout_edges_imports_calls_and_dedupe` — hand-built RepoGraph with an import,
+   a resolved call, a self-import (skipped), and a pair with both kinds → edge set
    matches expected (from, to, kind) tuples exactly.
+5. `test_resolve_module_aliases` — exact / nested / alias (`clio.config` →
+   `src.clio.config`) / unresolved ("os") cases.
+
+> **Executed note (deviation):** the graph parser resolves cross-module calls to
+> plain or aliased names (`b`, `pt.b`), never `module::name` — so real parsed repos
+> cannot produce cross-module call edges. `layout_graph` still resolves any callee
+> that carries a module path (`module::name` or dotted); test 4 uses a hand-built
+> RepoGraph (bypassing the parser) to exercise the call-edge logic directly.
+> Import targets of the `from pkg.two import b` form arrive as `pkg.two.b`, so
+> `resolve_module` uses longest-match for nested targets and shallowest for
+> ancestor/alias targets.
 
 Run: `python -m pytest tests/test_map.py -q`
-Expected: 4 passed.
+Expected: 5 passed.
 Run: `python -m pytest -q`
-Expected: 188 passed (184 + 4), 0 failed.
-Commit: `feat(map): deterministic SVG architecture-map layout (+4 tests)`
+Expected: 189 passed (184 + 5), 0 failed.
+Commit: `feat(map): deterministic SVG architecture-map layout (+5 tests)`
 
 ### Task 2 — map endpoint
 
@@ -121,7 +132,7 @@ Tests (3):
 Run: `python -m pytest tests/test_web.py -q`
 Expected: all web tests pass (new 3).
 Run: `python -m pytest -q`
-Expected: 191 passed (188 + 3), 0 failed.
+Expected: 192 passed (189 + 3), 0 failed.
 Commit: `feat(web): /api/jobs/<id>/graph/map endpoint with impact param (+3 tests)`
 
 ### Task 3 — SVG map UI
@@ -142,7 +153,7 @@ Tests (3, presence only — JS is not executed):
     block gating the impact animation.
 
 Run: `python -m pytest -q`
-Expected: 194 passed (191 + 3), 0 failed.
+Expected: 195 passed (192 + 3), 0 failed.
 Commit: `feat(web): SVG architecture map with impact mode (+3 tests)`
 
 ### Task 4 — final review
@@ -168,7 +179,7 @@ Commit: `feat(web): SVG architecture map with impact mode (+3 tests)`
 ## Final run
 
 Run: `python -m pytest -q`
-Expected: 194 passed, 0 failed.
+Expected: 195 passed, 0 failed.
 
 ## Definition of done
 
@@ -176,4 +187,4 @@ Expected: 194 passed, 0 failed.
   ranked affected modules + verdict.
 - Dashboard shows the SVG map in both themes; hover highlights neighbors; click opens
   the detail panel; impact mode animates red propagation (reduced-motion safe).
-- 194 passed; README updated; pushed to GitHub.
+- 195 passed; README updated; pushed to GitHub.
