@@ -529,7 +529,7 @@ def make_client(provider: str, limits: Limits | None = None) -> LLMClient:
 - [ ] **Step 4: Run the full suite to verify green**
 
 Run: `python -m pytest -q`
-Expected: 165 passed (158 + 7), 0 failed.
+Expected: 166 passed (158 + 8), 0 failed.
 
 - [ ] **Step 5: Commit**
 
@@ -659,7 +659,7 @@ GROQ_API_KEY=
 - [ ] **Step 4: Run the full suite to verify green**
 
 Run: `python -m pytest -q`
-Expected: 168 passed (165 + 3), 0 failed. The existing `test_parser_defaults` (asserts `"mock"` default) passes because `CLIO_PROVIDER` is unset and no `.env` exists at the repo root.
+Expected: 169 passed (166 + 3), 0 failed. The existing `test_parser_defaults` (asserts `"mock"` default) passes because `CLIO_PROVIDER` is unset and no `.env` exists at the repo root.
 
 - [ ] **Step 5: Commit**
 
@@ -673,7 +673,7 @@ git commit -m "feat(cli,web): wire provider factory, drop httpx, add .env.exampl
 ## Final review
 
 - [ ] **Step 1: `git log --oneline`** — four M7 commits present: `feat(config): add .env loader and provider resolution` → `feat(llm): stdlib HTTP layer and urllib Gemini client` → `feat(llm): add Groq provider and make_client factory` → `feat(cli,web): wire provider factory, drop httpx, add .env.example`
-- [ ] **Step 2: Full suite** — `python -m pytest -q` → 168 passed
+- [ ] **Step 2: Full suite** — `python -m pytest -q` → 169 passed
 - [ ] **Step 3: Dependency check** — `pip show httpx` reports not-installed (or the project installs cleanly with `dependencies = []`); `python -c "import clio.llm, clio.cli, clio.web"` imports cleanly with no network access
 - [ ] **Step 4: Manual CLI demo** — `python -m clio.cli --help` shows `--provider {mock,gemini,groq}` defaulting to `mock`; with `CLIO_PROVIDER=groq` and `GROQ_API_KEY` set, `python -m clio build https://github.com/omhome16/Clio.git` runs against Groq (skip if no key — mock path must run identically)
 - [ ] **Step 5: Update README** — append `| M7 — LLM providers (.env config, urllib Gemini, Groq client) | ✅ Done |` to the milestone table in `README.md`; commit `docs: mark M7 done`
