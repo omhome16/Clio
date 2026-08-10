@@ -86,7 +86,7 @@ Details: see `blueprint.md` (not tracked — ask the author).
 | M2 — code graph (extraction, SQLite store, clustering) | ✅ Done |
 | M3 — synthesis + persistence (report archive) | ✅ Done |
 | M4 — impact analysis | ✅ Done |
-| M5 — frontend | Planned |
+| M5 — frontend (zero-dependency live dashboard: SSE stream + archive API) | ✅ Done |
 | M6 — evals + benchmark | Planned |
 
 Project-based learning, built in public. No deadline — depth first.
