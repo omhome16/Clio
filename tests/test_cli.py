@@ -24,8 +24,10 @@ async def test_cli_end_to_end_mock(tmp_path, local_repo, monkeypatch, capsys):
     assert await amain(args) == 0
     out = capsys.readouterr().out
     assert "job.cloned" in out
+    assert "job.graphed" in out
     assert "REPORT:" in out
     payload = out.split("REPORT:", 1)[1]
     report = json.loads(payload)
     assert report["summary"] == "merged"
+    assert report["graph"]["modules"] >= 3
     assert (tmp_path / "sandbox" / "jobs").is_dir()

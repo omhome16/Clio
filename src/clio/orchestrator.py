@@ -6,16 +6,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from clio.clone import CloneError, clone_repo
+from clio.clustering import cluster_by_package
 from clio.config import Limits, get_limits
 from clio.events import (
     EVENT_JOB_ANALYZING, EVENT_JOB_CLONED, EVENT_JOB_CLONING, EVENT_JOB_CREATED,
-    EVENT_JOB_FAILED, EVENT_JOB_INDEXING, EVENT_JOB_PERSISTED, EVENT_JOB_SYNTHESIZING,
-    EVENT_SUBAGENT_DONE, Event, EventBus,
+    EVENT_JOB_FAILED, EVENT_JOB_GRAPHED, EVENT_JOB_INDEXING, EVENT_JOB_PERSISTED,
+    EVENT_JOB_SYNTHESIZING, EVENT_SUBAGENT_DONE, Event, EventBus,
 )
+from clio.graph import build_repo_graph
 from clio.job import AnalysisJob, jobs_dir, new_job, record_clone, update_status
 from clio.llm import LLMClient
 from clio.sandbox import Sandbox
 from clio.scheduler import fan_out
+from clio.store import GraphStore
 from clio.subagent import Subagent, SubagentReport, SubagentSpec
 from clio.tools import ToolRegistry
 
@@ -92,6 +95,7 @@ class AnalysisReport:
     aspects: dict[str, dict]
     summary: str
     created_at: str
+    graph: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -135,6 +139,16 @@ class Orchestrator:
             self._emit(EVENT_JOB_CLONED, job.job_id, {"commit_sha": clone.commit_sha})
             record_clone(job, clone, root)
             self._emit(EVENT_JOB_INDEXING, job.job_id, {})
+            graph = build_repo_graph(self._sandbox.workspace(job.job_id))
+            graph_stats = {
+                "modules": graph.module_count,
+                "symbols": graph.symbol_count,
+                "calls": graph.call_count,
+                "clusters": len(cluster_by_package(graph)),
+            }
+            jobs_dir(root).mkdir(parents=True, exist_ok=True)
+            GraphStore(jobs_dir(root) / f"{job.job_id}.graph.db").save(graph)
+            self._emit(EVENT_JOB_GRAPHED, job.job_id, graph_stats)
 
             update_status(job, "ANALYZING", root)
             self._emit(EVENT_JOB_ANALYZING, job.job_id, {})
@@ -185,6 +199,7 @@ class Orchestrator:
                 aspects=aspects,
                 summary=summary,
                 created_at=datetime.now(UTC).isoformat(),
+                graph=graph_stats,
             )
             jobs_dir(root).mkdir(parents=True, exist_ok=True)
             (jobs_dir(root) / f"{job.job_id}.report.json").write_text(

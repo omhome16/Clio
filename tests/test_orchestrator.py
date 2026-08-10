@@ -5,7 +5,7 @@ import pytest
 
 from clio.config import Limits
 from clio.events import (
-    EVENT_JOB_CLONED, EVENT_JOB_FAILED, EVENT_JOB_PERSISTED,
+    EVENT_JOB_CLONED, EVENT_JOB_FAILED, EVENT_JOB_GRAPHED, EVENT_JOB_PERSISTED,
     EVENT_SUBAGENT_DONE, EVENT_SUBAGENT_START, Event, EventBus,
 )
 from clio.job import load_job
@@ -67,6 +67,35 @@ def test_report_roundtrip():
         job_id="clio-1", repo_url="https://github.com/x/y.git", commit_sha="abc",
         aspects={"a": {"ok": True, "content": "z"}}, summary="s",
         created_at="2026-08-10T00:00:00+00:00",
+    )
+    restored = AnalysisReport.from_dict(report.to_dict())
+    assert restored == report
+
+
+async def test_pipeline_builds_graph(tmp_path, local_repo):
+    limits = Limits(workspace_root=tmp_path / "sandbox", max_agent_steps=5)
+    sandbox = Sandbox(root=tmp_path / "sandbox", limits=limits)
+    client = MockLLM(handler=_mock_handler(limits))
+    bus = EventBus()
+    seen = []
+    bus.subscribe(seen.append)
+    orch = Orchestrator(sandbox, client, bus=bus, limits=limits)
+    report = await orch.run(local_repo.as_uri(), root=tmp_path, job_id="clio-graph")
+    assert report.graph is not None
+    assert report.graph["modules"] >= 3
+    assert report.graph["symbols"] >= 2
+    assert report.graph["clusters"] >= 1
+    assert (tmp_path / "jobs" / "clio-graph.graph.db").is_file()
+    types = [e.type for e in seen]
+    assert types.count(EVENT_JOB_GRAPHED) == 1
+
+
+def test_report_roundtrip_with_graph():
+    report = AnalysisReport(
+        job_id="clio-1", repo_url="https://github.com/x/y.git", commit_sha="abc",
+        aspects={"a": {"ok": True, "content": "z"}}, summary="s",
+        created_at="2026-08-10T00:00:00+00:00",
+        graph={"modules": 3, "symbols": 2, "calls": 1, "clusters": 2},
     )
     restored = AnalysisReport.from_dict(report.to_dict())
     assert restored == report
