@@ -45,6 +45,7 @@ class Limits:
 
 
 def get_limits() -> Limits:
+    load_env()
     return Limits(
         max_repo_size=_env_int("CLIO_MAX_REPO_SIZE_MB", 50) * 1024 * 1024,
         max_files=_env_int("CLIO_MAX_FILES", 20_000),
@@ -60,3 +61,26 @@ def get_limits() -> Limits:
         cheap_model=os.environ.get("CLIO_CHEAP_MODEL", "gemini-2.0-flash"),
         frontier_model=os.environ.get("CLIO_FRONTIER_MODEL", "gemini-2.5-pro"),
     )
+
+
+def load_env() -> None:
+    """Load ``KEY=VALUE`` lines from ``$CLIO_ENV_FILE`` (default ``.env`` in the
+    current directory) into ``os.environ`` without overriding existing variables."""
+    path = Path(os.environ.get("CLIO_ENV_FILE", ".env"))
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def get_provider() -> str:
+    """LLM provider name from ``CLIO_PROVIDER`` (default ``"mock"``)."""
+    load_env()
+    return os.environ.get("CLIO_PROVIDER", "mock")
