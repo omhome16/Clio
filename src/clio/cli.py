@@ -4,10 +4,10 @@ import argparse
 import asyncio
 import json
 
-from clio.config import Limits, get_limits
+from clio.config import Limits, get_limits, get_provider
 from clio.events import Event, EventBus, SseFormatter
 from clio.impact import impact_of_symbol
-from clio.llm import MockLLM, mock_handler as _mock_handler
+from clio.llm import make_client
 from clio.reports import ReportArchive
 from clio.orchestrator import Orchestrator
 from clio.sandbox import Sandbox
@@ -17,8 +17,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="clio", description="Analyze a git repository")
     parser.add_argument("url", help="https://github.com/... or file:// repo URL")
     parser.add_argument(
-        "--provider", choices=["mock", "gemini"], default="mock",
-        help="LLM provider (default: mock, no API key needed)",
+        "--provider", choices=["mock", "gemini", "groq"], default=get_provider(),
+        help="LLM provider (default: $CLIO_PROVIDER, mock if unset)",
     )
     parser.add_argument("--job-id", default=None, help="override the generated job id")
     parser.add_argument(
@@ -33,11 +33,7 @@ async def amain(args: argparse.Namespace) -> int:
     bus = EventBus()
     bus.subscribe(lambda e: print(f"[{e.ts[11:19]}] {e.type} {json.dumps(e.data)[:160]}"))
     sandbox = Sandbox(root=limits.workspace_root, limits=limits)
-    if args.provider == "gemini":
-        from clio.llm import GeminiClient
-        client = GeminiClient()
-    else:
-        client = MockLLM(handler=_mock_handler(limits))
+    client = make_client(args.provider, limits)
     orchestrator = Orchestrator(sandbox, client, bus=bus, limits=limits)
     report = await orchestrator.run(args.url, root=sandbox.root, job_id=args.job_id)
     if args.impact:

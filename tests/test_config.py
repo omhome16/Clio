@@ -81,6 +81,8 @@ def test_dotenv_applies_values(monkeypatch, tmp_path):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     assert get_provider() == "groq"
     assert os.environ["GEMINI_API_KEY"] == "secret-123"
+    os.environ.pop("CLIO_PROVIDER", None)
+    os.environ.pop("GEMINI_API_KEY", None)
 
 
 def test_dotenv_does_not_override_existing(monkeypatch, tmp_path):
@@ -97,6 +99,7 @@ def test_dotenv_supplies_limits(monkeypatch, tmp_path):
     monkeypatch.setenv("CLIO_ENV_FILE", str(env_file))
     monkeypatch.delenv("CLIO_MAX_FILES", raising=False)
     assert get_limits().max_files == 10
+    os.environ.pop("CLIO_MAX_FILES", None)
 
 
 def test_get_provider_from_env(monkeypatch):

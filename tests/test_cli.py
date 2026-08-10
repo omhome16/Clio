@@ -52,3 +52,14 @@ async def test_cli_impact_missing_symbol(tmp_path, local_repo, monkeypatch, caps
     assert await amain(args) == 0
     out = capsys.readouterr().out
     assert '"verdict": "missing"' in out
+
+
+def test_parser_accepts_groq():
+    args = build_parser().parse_args(["https://github.com/x/y.git", "--provider", "groq"])
+    assert args.provider == "groq"
+
+
+def test_parser_default_provider_from_env(monkeypatch):
+    monkeypatch.setenv("CLIO_PROVIDER", "groq")
+    args = build_parser().parse_args(["https://github.com/x/y.git"])
+    assert args.provider == "groq"

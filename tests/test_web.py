@@ -108,3 +108,32 @@ def test_analyze_failed_job_streams_failure(dashboard):
         data = resp.read().decode("utf-8")
     assert "job.failed" in data
     assert "event: done" in data
+
+
+def test_run_job_builds_provider_client(monkeypatch, tmp_path):
+    calls = {}
+
+    class FakeClient:
+        async def complete(self, messages, **kwargs):
+            return '{"final": "done"}'
+
+    def fake_make_client(provider, limits=None):
+        calls["provider"] = provider
+        calls["limits"] = limits
+        return FakeClient()
+
+    class FakeOrchestrator:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run(self, url, root, job_id):
+            calls["job_id"] = job_id
+            return None
+
+    monkeypatch.setattr("clio.web.make_client", fake_make_client)
+    monkeypatch.setattr("clio.web.Orchestrator", FakeOrchestrator)
+    monkeypatch.setenv("CLIO_PROVIDER", "groq")
+    dashboard = Dashboard(root=tmp_path)
+    dashboard.run_job("file:///tmp/x", "job-1")
+    assert calls["provider"] == "groq"
+    assert calls["job_id"] == "job-1"

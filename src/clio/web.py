@@ -12,12 +12,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
 
-from clio.cli import _mock_handler
 from clio.clustering import cluster_by_package
-from clio.config import Limits, get_limits
+from clio.config import Limits, get_limits, get_provider
 from clio.events import Event, EventBus
 from clio.job import load_job
-from clio.llm import MockLLM
+from clio.llm import make_client
 from clio.orchestrator import Orchestrator
 from clio.reports import ReportArchive
 from clio.sandbox import Sandbox
@@ -396,7 +395,7 @@ class Dashboard:
         sandbox = Sandbox(root=self.root, limits=limits)
         bus = EventBus()
         bus.subscribe(lambda e: self._publish(job_id, e))
-        client = MockLLM(handler=_mock_handler(limits))
+        client = make_client(get_provider(), limits)
         orchestrator = Orchestrator(sandbox, client, bus=bus, limits=limits)
         try:
             asyncio.run(orchestrator.run(url, root=sandbox.root, job_id=job_id))
