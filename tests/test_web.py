@@ -4,6 +4,7 @@ import urllib.request
 
 import pytest
 
+from clio.reports import ReportArchive
 from clio.web import Dashboard
 
 INDEX_MARKER = "clio-dashboard"
@@ -75,3 +76,34 @@ def test_api_job_graph(dashboard, seed_job):
 def test_api_unknown_route(dashboard):
     _, url = dashboard
     assert _get(url + "/api/nope")[0] == 404
+
+
+def test_analyze_and_stream(dashboard, local_repo):
+    dash, url = dashboard
+    status, body = _post(url + "/api/analyze?url=" + urllib.parse.quote(local_repo.as_uri()))
+    assert status == 200
+    job_id = json.loads(body)["job_id"]
+    stream_url = f"{url}/api/stream?job_id={job_id}"
+    with urllib.request.urlopen(stream_url, timeout=60) as resp:
+        assert resp.status == 200
+        assert resp.headers["Content-Type"] == "text/event-stream"
+        data = resp.read().decode("utf-8")
+    types = [line.split(": ", 1)[1] for line in data.splitlines() if line.startswith("data: ")]
+    events = [json.loads(line) for line in types if '"type"' in line]
+    seen = {e["type"] for e in events}
+    assert {"job.created", "job.cloned", "job.graphed", "job.persisted"} <= seen
+    assert "subagent.start" in seen
+    report = ReportArchive(dash.root).get_report(job_id)
+    assert report is not None and report["summary"] == "merged"
+
+
+def test_analyze_failed_job_streams_failure(dashboard):
+    _, url = dashboard
+    status, body = _post(url + "/api/analyze?url=" + urllib.parse.quote("file:///definitely/missing/repo"))
+    assert status == 200
+    job_id = json.loads(body)["job_id"]
+    stream_url = f"{url}/api/stream?job_id={job_id}"
+    with urllib.request.urlopen(stream_url, timeout=60) as resp:
+        data = resp.read().decode("utf-8")
+    assert "job.failed" in data
+    assert "event: done" in data
