@@ -12,9 +12,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
 
+from clio.ask import AskSession
 from clio.clustering import cluster_by_package
 from clio.config import Limits, get_limits, get_provider
-from clio.events import Event, EventBus
+from clio.events import EVENT_ASK_FINAL, EVENT_ASK_TOOL, Event, EventBus
 from clio.job import load_job
 from clio.llm import make_client
 from clio.orchestrator import Orchestrator
@@ -357,6 +358,9 @@ class Dashboard:
         self._lock = threading.Lock()
         self._jobs: dict[str, deque[Event]] = {}
         self._done: dict[str, bool] = {}
+        self._ask_queues: dict[str, deque[dict]] = {}
+        self._ask_done: dict[str, bool] = {}
+        self._ask_sessions: dict[str, AskSession] = {}
         self._httpd: ThreadingHTTPServer | None = None
 
     def start(self) -> str:
@@ -406,6 +410,54 @@ class Dashboard:
         finally:
             with self._lock:
                 self._done[job_id] = True
+
+    def ask_session(self, job_id: str) -> AskSession:
+        with self._lock:
+            session = self._ask_sessions.get(job_id)
+            if session is None:
+                session = AskSession(
+                    job_id, self.root, make_client(get_provider(), get_limits())
+                )
+                self._ask_sessions[job_id] = session
+            return session
+
+    def ask_start(self, job_id: str) -> None:
+        with self._lock:
+            self._ask_queues[job_id] = deque()
+            self._ask_done[job_id] = False
+
+    def _publish_ask(self, job_id: str, payload: dict) -> None:
+        with self._lock:
+            self._ask_queues[job_id].append(payload)
+
+    def ask_snapshot(self, job_id: str) -> tuple[list[dict], bool]:
+        with self._lock:
+            q = self._ask_queues.get(job_id)
+            if q is None:
+                return [], self._ask_done.get(job_id, True)
+            pending = list(q)
+            q.clear()
+            return pending, self._ask_done.get(job_id, False)
+
+    def run_ask(self, job_id: str, question: str) -> None:
+        session = self.ask_session(job_id)
+        bus = EventBus()
+
+        def forward(event: Event) -> None:
+            if event.type in (EVENT_ASK_TOOL, EVENT_ASK_FINAL):
+                self._publish_ask(job_id, {"type": event.type, "data": event.data})
+
+        bus.subscribe(forward)
+        try:
+            asyncio.run(session.run_turn(question, bus=bus))
+        except Exception as exc:
+            self._publish_ask(job_id, {
+                "type": EVENT_ASK_FINAL,
+                "data": {"answer": f"error: {exc}", "ok": False},
+            })
+        finally:
+            with self._lock:
+                self._ask_done[job_id] = True
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -457,6 +509,10 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/stream":
             self._stream(urllib.parse.parse_qs(parsed.query).get("job_id", [""])[0])
             return
+        if path == "/api/ask":
+            params = urllib.parse.parse_qs(parsed.query)
+            self._ask(params.get("job_id", [""])[0], params.get("q", [""])[0])
+            return
         self._json_error(404, "not found")
 
     def do_POST(self) -> None:
@@ -507,6 +563,35 @@ class _Handler(BaseHTTPRequestHandler):
             for event in pending:
                 payload = json.dumps({"type": event.type, "data": event.data, "ts": event.ts})
                 self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                self.wfile.flush()
+            if done and not pending:
+                self.wfile.write(b"event: done\ndata: {}\n\n")
+                self.wfile.flush()
+                break
+            time.sleep(0.1)
+
+    def _ask(self, job_id: str, question: str) -> None:
+        dash = self.server.dashboard
+        if not question:
+            self._json_error(400, "missing q parameter")
+            return
+        archive = ReportArchive(dash.root)
+        known = job_id in dash._jobs or archive.get_report(job_id) is not None
+        if not known:
+            self._json_error(404, f"no job {job_id}")
+            return
+        dash.ask_start(job_id)
+        threading.Thread(target=dash.run_ask, args=(job_id, question), daemon=True).start()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        while True:
+            pending, done = dash.ask_snapshot(job_id)
+            for payload in pending:
+                line = json.dumps({"type": payload["type"], "data": payload["data"]})
+                self.wfile.write(f"data: {line}\n\n".encode("utf-8"))
                 self.wfile.flush()
             if done and not pending:
                 self.wfile.write(b"event: done\ndata: {}\n\n")

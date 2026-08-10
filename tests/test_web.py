@@ -137,3 +137,31 @@ def test_run_job_builds_provider_client(monkeypatch, tmp_path):
     dashboard.run_job("file:///tmp/x", "job-1")
     assert calls["provider"] == "groq"
     assert calls["job_id"] == "job-1"
+
+
+def test_api_ask_streams_answer(dashboard, seed_job, monkeypatch):
+    dash, url = dashboard
+    seed_job(dash.root, "job-1", "2026-08-10T00:00:00+00:00",
+             {"a.py": "def f():\n    return 1\n"})
+
+    class FakeClient:
+        async def complete(self, messages, **kwargs):
+            return '{"final": "a::f is a function"}'
+
+    monkeypatch.setattr("clio.web.make_client", lambda provider, limits=None: FakeClient())
+    status, body = _get(url + "/api/ask?job_id=job-1&q=" + urllib.parse.quote("what is a::f?"))
+    assert status == 200
+    assert "ask.final" in body
+    assert "a::f is a function" in body
+    assert "event: done" in body
+
+
+def test_api_ask_unknown_job_404(dashboard):
+    _, url = dashboard
+    assert _get(url + "/api/ask?job_id=nope&q=hi")[0] == 404
+
+
+def test_api_ask_missing_question_400(dashboard, seed_job):
+    dash, url = dashboard
+    seed_job(dash.root, "job-1", "2026-08-10T00:00:00+00:00", {"a.py": ""})
+    assert _get(url + "/api/ask?job_id=job-1")[0] == 400
