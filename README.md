@@ -89,6 +89,7 @@ Details: see `blueprint.md` (not tracked — ask the author).
 | M5 — frontend (zero-dependency live dashboard: SSE stream + archive API) | ✅ Done |
 | M6 — evals + benchmark (golden repo suite, deterministic graders, phase timing) | ✅ Done |
 | M7 — LLM providers (.env config, urllib Gemini, Groq client, provider factory) | ✅ Done |
+| M8 — agentic Ask panel (chat over sandboxed tools, SSE) + theme system | ✅ Done |
 
 Project-based learning, built in public. No deadline — depth first.
 
