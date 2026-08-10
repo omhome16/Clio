@@ -81,8 +81,8 @@ Details: see `blueprint.md` (not tracked — ask the author).
 | Phase | Status |
 |---|---|
 | Blueprint | ✅ Done |
-| M0 — sandbox + clone + tree tools | In progress |
-| M1 — harness runtime | Planned |
+| M0 — sandbox + clone + tree tools | ✅ Done |
+| M1 — harness runtime (events, tools, subagents, scheduler, orchestrator, CLI) | ✅ Done |
 | M2 — code graph | Planned |
 | M3 — synthesis + persistence | Planned |
 | M4 — impact analysis | Planned |

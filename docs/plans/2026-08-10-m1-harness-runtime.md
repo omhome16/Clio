@@ -1316,7 +1316,7 @@ def _mock_handler(limits):
     return handler
 
 
-def test_full_pipeline(tmp_path, local_repo):
+async def test_full_pipeline(tmp_path, local_repo):
     limits = Limits(workspace_root=tmp_path / "sandbox", max_agent_steps=5)
     sandbox = Sandbox(root=tmp_path / "sandbox", limits=limits)
     client = MockLLM(handler=_mock_handler(limits))
@@ -1324,7 +1324,7 @@ def test_full_pipeline(tmp_path, local_repo):
     seen = []
     bus.subscribe(seen.append)
     orch = Orchestrator(sandbox, client, bus=bus, limits=limits)
-    report = orch.run(local_repo.as_uri(), root=tmp_path, job_id="clio-test")
+    report = await orch.run(local_repo.as_uri(), root=tmp_path, job_id="clio-test")
     assert report.repo_url == local_repo.as_uri()
     assert len(report.commit_sha) == 12
     assert set(report.aspects) == {"structure", "dependencies", "risks", "entrypoints"}
@@ -1339,7 +1339,7 @@ def test_full_pipeline(tmp_path, local_repo):
     assert types.count(EVENT_SUBAGENT_DONE) == 4
 
 
-def test_failed_clone_marks_job_failed(tmp_path):
+async def test_failed_clone_marks_job_failed(tmp_path):
     limits = Limits(workspace_root=tmp_path / "sandbox")
     sandbox = Sandbox(root=tmp_path / "sandbox", limits=limits)
     client = MockLLM(handler=_mock_handler(limits))
@@ -1348,7 +1348,7 @@ def test_failed_clone_marks_job_failed(tmp_path):
     bus.subscribe(seen.append)
     orch = Orchestrator(sandbox, client, bus=bus, limits=limits)
     with pytest.raises(Exception):
-        orch.run("https://github.com/omhome16/does-not-exist-xyz.git", root=tmp_path, job_id="clio-fail")
+        await orch.run("https://github.com/omhome16/does-not-exist-xyz.git", root=tmp_path, job_id="clio-fail")
     job = load_job("clio-fail", tmp_path)
     assert job.status == "FAILED"
     assert any(e.type == EVENT_JOB_FAILED for e in seen)
@@ -1541,18 +1541,24 @@ class Orchestrator:
             self._emit(EVENT_JOB_SYNTHESIZING, job.job_id, {})
             synth = Subagent(
                 SYNTH_SPEC, self._client, registry,
-                bus=self._bus, job_id=job.job_id,
+                bus=None, job_id=job.job_id,
                 model=self._limits.frontier_model, max_steps=self._limits.max_agent_steps,
             )
             synth_report = await synth.run(
                 SYNTH_TASK.format(repo=url, findings=json.dumps(aspects, indent=2))
             )
+            # Synthesizer emits its findings as JSON; the summary field is the
+            # "merged" verdict, falling back to the raw content if unparseable.
+            try:
+                summary = json.loads(synth_report.content).get("summary", synth_report.content)
+            except json.JSONDecodeError:
+                summary = synth_report.content
             report = AnalysisReport(
                 job_id=job.job_id,
                 repo_url=url,
                 commit_sha=clone.commit_sha,
                 aspects=aspects,
-                summary=synth_report.content,
+                summary=summary,
                 created_at=datetime.now(UTC).isoformat(),
             )
             jobs_dir(root).mkdir(parents=True, exist_ok=True)
@@ -1622,10 +1628,10 @@ def test_parser_invalid_provider_rejected():
         build_parser().parse_args(["https://github.com/x/y.git", "--provider", "nope"])
 
 
-def test_cli_end_to_end_mock(tmp_path, local_repo, monkeypatch, capsys):
+async def test_cli_end_to_end_mock(tmp_path, local_repo, monkeypatch, capsys):
     monkeypatch.setenv("CLIO_WORKSPACE_ROOT", str(tmp_path / "sandbox"))
     args = build_parser().parse_args([local_repo.as_uri()])
-    assert amain(args) == 0
+    assert await amain(args) == 0
     out = capsys.readouterr().out
     assert "job.cloned" in out
     assert "REPORT:" in out
