@@ -159,6 +159,7 @@ from clio.cli import _mock_handler
 from clio.clustering import cluster_by_package
 from clio.config import Limits, get_limits
 from clio.events import Event, EventBus
+from clio.llm import MockLLM
 from clio.orchestrator import Orchestrator
 from clio.reports import ReportArchive
 from clio.sandbox import Sandbox
