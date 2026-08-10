@@ -18,6 +18,8 @@ EVENT_JOB_SYNTHESIZING = "job.synthesizing"
 EVENT_JOB_PERSISTED = "job.persisted"
 EVENT_JOB_FAILED = "job.failed"
 EVENT_LOG = "log"
+EVENT_ASK_TOOL = "ask.tool"
+EVENT_ASK_FINAL = "ask.final"
 
 
 @dataclass(frozen=True)

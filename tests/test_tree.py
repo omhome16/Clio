@@ -51,6 +51,10 @@ def test_list_tree_respects_max_depth(tmp_path):
         list_tree(root, max_depth=0)
 
 
+def test_list_tree_missing_dir_is_empty(tmp_path):
+    assert list_tree(tmp_path / "does-not-exist") == []
+
+
 def test_workspace_stats_counts_and_sizes(tmp_path):
     root = _make_fixture(tmp_path / "proj")
     stats = workspace_stats(root)

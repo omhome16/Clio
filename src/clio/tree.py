@@ -18,6 +18,8 @@ def list_tree(
     max_depth: int | None = None,
 ) -> list[Path]:
     limits = get_limits()
+    if not Path(root).is_dir():
+        return []
     excluded = exclude_dirs if exclude_dirs is not None else limits.exclude_dirs
     cap = max_files if max_files is not None else limits.max_files
 
