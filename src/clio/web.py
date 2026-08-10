@@ -16,6 +16,7 @@ from clio.cli import _mock_handler
 from clio.clustering import cluster_by_package
 from clio.config import Limits, get_limits
 from clio.events import Event, EventBus
+from clio.job import load_job
 from clio.llm import MockLLM
 from clio.orchestrator import Orchestrator
 from clio.reports import ReportArchive
@@ -233,7 +234,13 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/jobs":
             archive = ReportArchive(self.server.dashboard.root)
-            self._send_json(200, {"jobs": archive.list_reports()})
+            jobs = []
+            for report in archive.list_reports():
+                row = dict(report)
+                job = load_job(row["job_id"], self.server.dashboard.root)
+                row["status"] = job.status if job is not None else "PERSISTED"
+                jobs.append(row)
+            self._send_json(200, {"jobs": jobs})
             return
         if path.startswith("/api/jobs/"):
             rest = path[len("/api/jobs/"):]

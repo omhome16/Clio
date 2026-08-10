@@ -105,6 +105,7 @@ def test_api_jobs_list(dashboard, seed_job):
     assert status == 200
     jobs = json.loads(body)["jobs"]
     assert [j["job_id"] for j in jobs] == ["job-1", "job-2"]
+    assert all("status" in j for j in jobs)
 
 
 def test_api_job_report(dashboard, seed_job):
@@ -159,6 +160,7 @@ from clio.cli import _mock_handler
 from clio.clustering import cluster_by_package
 from clio.config import Limits, get_limits
 from clio.events import Event, EventBus
+from clio.job import load_job
 from clio.llm import MockLLM
 from clio.orchestrator import Orchestrator
 from clio.reports import ReportArchive
@@ -376,7 +378,13 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/jobs":
             archive = ReportArchive(self.server.dashboard.root)
-            self._send_json(200, {"jobs": archive.list_reports()})
+            jobs = []
+            for report in archive.list_reports():
+                row = dict(report)
+                job = load_job(row["job_id"], self.server.dashboard.root)
+                row["status"] = job.status if job is not None else "PERSISTED"
+                jobs.append(row)
+            self._send_json(200, {"jobs": jobs})
             return
         if path.startswith("/api/jobs/"):
             rest = path[len("/api/jobs/"):]

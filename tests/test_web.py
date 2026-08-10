@@ -50,6 +50,7 @@ def test_api_jobs_list(dashboard, seed_job):
     assert status == 200
     jobs = json.loads(body)["jobs"]
     assert [j["job_id"] for j in jobs] == ["job-1", "job-2"]
+    assert all("status" in j for j in jobs)
 
 
 def test_api_job_report(dashboard, seed_job):
