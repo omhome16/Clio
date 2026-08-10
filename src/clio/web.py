@@ -162,6 +162,31 @@ pre { margin:0; max-height:300px; overflow:auto; background:var(--paper-2);
       border:1px solid var(--rule); padding:12px; font-size:11px;
       line-height:1.5; white-space:pre-wrap; word-break:break-word; }
 
+#map-detail { border:1px solid var(--rule); background:var(--paper-2);
+  padding:12px; font-size:12px; margin-bottom:10px; }
+#map-detail .impact-list { margin:6px 0 0; padding-left:20px; }
+#map-detail ol.impact-list li { padding:1px 0; }
+.map-wrap { overflow:auto; max-height:520px; border:1px solid var(--rule); }
+#map { display:block; width:100%; height:auto; background:var(--paper-2); }
+#map .edge { stroke:var(--rule); stroke-width:1.5; opacity:.6; }
+#map .edge.e-call, #map .edge.e-both { stroke:var(--blue); stroke-dasharray:4 3; }
+#map .edge.map-edge-on { stroke:var(--ink); opacity:1; }
+#map .edge.impact { stroke:var(--bad); opacity:1; }
+#map .node { cursor:pointer; }
+#map .node rect { fill:var(--paper); stroke:var(--rule); stroke-width:1;
+  transition:fill .12s, stroke .12s; }
+#map .node text { fill:var(--muted); font-size:10px;
+  font-family:ui-monospace,"Cascadia Mono",Consolas,monospace; }
+#map .node.map-hover rect { stroke:var(--blue); stroke-width:2; fill:var(--paper-2); }
+#map .node.map-hover text, #map .node.map-neighbor text { fill:var(--ink); }
+#map .node.map-neighbor rect { stroke:var(--blue); }
+#map .node.impact rect { fill:var(--bad); fill-opacity:.18; stroke:var(--bad);
+  animation:impactPulse 700ms ease-out; }
+@keyframes impactPulse {
+  0% { fill:var(--bad); fill-opacity:.55; stroke-width:3; }
+  100% { fill:var(--bad); fill-opacity:.18; }
+}
+
 footer { border-top:1px solid var(--rule); }
 .foot { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;
         max-width:1240px; margin:0 auto; padding:12px 32px;
@@ -171,6 +196,7 @@ footer { border-top:1px solid var(--rule); }
   .lamp.running { animation:none; }
   .log-row { animation:none; }
   .ask { transition:none; }
+  #map .node.impact rect { animation:none; }
 }
 </style>
 </head>
@@ -215,6 +241,9 @@ footer { border-top:1px solid var(--rule); }
     </table>
     <h2 class="eyebrow" style="margin-top:24px">Report</h2>
     <pre id="report">Select a job from the history table.</pre>
+    <h2 class="eyebrow" style="margin-top:24px">Module map</h2>
+    <div id="map-detail" class="empty">Select a job, then click a module to inspect it.</div>
+    <div class="map-wrap"><svg id="map" role="img" aria-label="Module architecture map"></svg></div>
   </section>
 </main>
 <aside id="ask-panel" class="ask" aria-label="Ask about this analysis">
@@ -440,6 +469,148 @@ async function showJob(jobId, tr) {
   pre.textContent = resp.ok
     ? JSON.stringify(await resp.json(), null, 2)
     : "No report for " + jobId + ".";
+  loadMap(jobId);
+}
+
+const NS = "http://www.w3.org/2000/svg";
+let mapJob = null;
+
+async function loadMap(jobId) {
+  mapJob = jobId;
+  const svg = document.getElementById("map");
+  const detail = document.getElementById("map-detail");
+  detail.className = "empty";
+  detail.textContent = "Loading map…";
+  const resp = await fetch("/api/jobs/" + jobId + "/graph/map");
+  if (!resp.ok || mapJob !== jobId) {
+    svg.textContent = "";
+    if (resp.ok) detail.textContent = "";
+    return;
+  }
+  const payload = await resp.json();
+  renderMap(svg, payload);
+  detail.className = "empty";
+  detail.textContent = payload.nodes.length + " modules, " + payload.edges.length +
+    " edges — hover to trace, click a module for detail.";
+}
+
+function renderMap(svg, payload) {
+  const nodes = payload.nodes, edges = payload.edges;
+  const byId = {};
+  nodes.forEach((n) => byId[n.id] = n);
+  const neighbors = {};
+  edges.forEach((e) => {
+    (neighbors[e.from] = neighbors[e.from] || []).push(e.to);
+    (neighbors[e.to] = neighbors[e.to] || []).push(e.from);
+  });
+  const w = Math.max(0, ...nodes.map((n) => n.x)) + 280;
+  const h = Math.max(0, ...nodes.map((n) => n.y)) + 160;
+  svg.setAttribute("viewBox", "0 0 " + w + " " + h);
+  svg.textContent = "";
+  edges.forEach((e) => {
+    const a = byId[e.from], b = byId[e.to];
+    if (!a || !b) return;
+    const l = document.createElementNS(NS, "line");
+    l.setAttribute("x1", a.x + 130);
+    l.setAttribute("y1", a.y + 20);
+    l.setAttribute("x2", b.x + 130);
+    l.setAttribute("y2", b.y + 20);
+    l.classList.add("edge", "e-" + e.kind);
+    l.dataset.from = e.from;
+    l.dataset.to = e.to;
+    svg.appendChild(l);
+  });
+  nodes.forEach((n) => {
+    const g = document.createElementNS(NS, "g");
+    g.classList.add("node");
+    g.dataset.module = n.id;
+    const hh = 36 + Math.min(6, n.symbols) * 6;
+    const r = document.createElementNS(NS, "rect");
+    r.setAttribute("x", n.x + 8);
+    r.setAttribute("y", n.y - hh / 2 + 20);
+    r.setAttribute("width", 244);
+    r.setAttribute("height", hh);
+    const t = document.createElementNS(NS, "text");
+    t.setAttribute("x", n.x + 130);
+    t.setAttribute("y", n.y + 20);
+    t.setAttribute("text-anchor", "middle");
+    t.setAttribute("dominant-baseline", "middle");
+    t.textContent = n.id;
+    g.append(r, t);
+    g.addEventListener("mouseenter", () => highlightMap(n.id, neighbors, svg, true));
+    g.addEventListener("mouseleave", () => highlightMap(n.id, neighbors, svg, false));
+    g.addEventListener("click", () => showModuleDetail(n, neighbors));
+    svg.appendChild(g);
+  });
+}
+
+function highlightMap(id, neighbors, svg, on) {
+  svg.querySelectorAll(".node").forEach((g) => {
+    g.classList.toggle("map-hover", on && g.dataset.module === id);
+    g.classList.toggle("map-neighbor",
+      on && (neighbors[id] || []).includes(g.dataset.module));
+  });
+  svg.querySelectorAll(".edge").forEach((l) => {
+    const nbs = neighbors[id] || [];
+    const touch = l.dataset.from === id || l.dataset.to === id;
+    const between = nbs.includes(l.dataset.from) && nbs.includes(l.dataset.to);
+    l.classList.toggle("map-edge-on", on && (touch || between));
+  });
+}
+
+function showModuleDetail(node, neighbors) {
+  const detail = document.getElementById("map-detail");
+  detail.className = "";
+  detail.textContent = "";
+  const head = document.createElement("div");
+  head.innerHTML = "<strong>" + node.id + "</strong> &middot; cluster " + node.cluster +
+    " &middot; " + node.symbols + " symbols";
+  detail.appendChild(head);
+  const list = document.createElement("ul");
+  list.className = "impact-list";
+  (neighbors[node.id] || []).sort().forEach((nb) => {
+    const li = document.createElement("li");
+    li.textContent = nb;
+    list.appendChild(li);
+  });
+  const btn = document.createElement("button");
+  btn.textContent = "Impact";
+  btn.addEventListener("click", () => showImpact(node.id));
+  detail.append(head, list, btn);
+}
+
+async function showImpact(module) {
+  const svg = document.getElementById("map");
+  const detail = document.getElementById("map-detail");
+  const resp = await fetch("/api/jobs/" + mapJob + "/graph/map?impact=" +
+                           encodeURIComponent(module));
+  if (!resp.ok) return;
+  const impact = (await resp.json()).impact;
+  svg.querySelectorAll(".node.impact").forEach((g) => g.classList.remove("impact"));
+  impact.affected_modules.forEach((m, i) => {
+    const g = svg.querySelector('.node[data-module="' + m + '"]');
+    if (!g) return;
+    g.classList.add("impact");
+    g.querySelector("rect").style.animationDelay = (i * 140) + "ms";
+  });
+  svg.querySelectorAll(".edge").forEach((l) => {
+    l.classList.toggle("impact",
+      impact.affected_modules.includes(l.dataset.from) &&
+      impact.affected_modules.includes(l.dataset.to));
+  });
+  detail.className = "";
+  detail.textContent = "";
+  const head = document.createElement("div");
+  head.innerHTML = "<strong>Impact of " + module + "</strong> &middot; " + impact.verdict;
+  detail.appendChild(head);
+  const list = document.createElement("ol");
+  list.className = "impact-list";
+  impact.affected_modules.forEach((m) => {
+    const li = document.createElement("li");
+    li.textContent = m;
+    list.appendChild(li);
+  });
+  detail.append(head, list);
 }
 
 document.getElementById("run-form").addEventListener("submit", (e) => {

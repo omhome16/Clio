@@ -125,6 +125,25 @@ def test_api_job_map_deterministic_http(dashboard, seed_job):
     assert first == second
 
 
+def test_index_map_present():
+    from clio.web import INDEX_HTML
+    assert 'id="map"' in INDEX_HTML
+    assert "Module map" in INDEX_HTML
+    assert "/graph/map" in INDEX_HTML
+
+
+def test_index_map_detail_panel():
+    from clio.web import INDEX_HTML
+    assert 'id="map-detail"' in INDEX_HTML
+    assert "Impact" in INDEX_HTML
+
+
+def test_index_map_reduced_motion():
+    from clio.web import INDEX_HTML
+    assert "prefers-reduced-motion" in INDEX_HTML
+    assert "#map .node.impact rect { animation:none; }" in INDEX_HTML
+
+
 def test_api_unknown_route(dashboard):
     _, url = dashboard
     assert _get(url + "/api/nope")[0] == 404
