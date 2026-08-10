@@ -3,7 +3,7 @@
 - Date: 2026-08-10
 - Branch: `feat/m3-m4-persistence-impact`
 - Precondition: M0+M1+M2 merged to `main` (112 tests passing)
-- Target: 128 tests passing (112 + 1 store `has_symbol` + 6 reports + 7 impact + 2 cli)
+- Target: 130 tests passing (112 + 2 store incl. src-layout alias + 6 reports + 8 impact + 2 cli)
 - Offline-friendly: zero network tests, zero new dependencies
 
 ## What M3+M4 deliver
@@ -32,6 +32,12 @@ the two remaining milestones:
 - **Reverse edges only need what the store already answers.** `callers_of` gives the
   reverse call graph; `modules_importing` gives reverse imports (exact + submodule
   prefix match). No new schema.
+- **src-layout alias in `modules_importing`.** Repos like Clio's own live under `src/`:
+  the module on disk is `src.clio.orchestrator` but code imports `clio.orchestrator`.
+  `modules_importing` therefore ALSO matches when a known module ends with the import
+  target's module part (`src.clio.orchestrator` ends with `.clio.orchestrator`). This is
+  the fix that makes impact analysis work on src-layout repos (discovered in the M2 demo
+  review); covered by new store + impact tests.
 - **Depth semantics.** Symbol scope: `depth` = number of caller hops walked (depth 1 =
   direct callers only). Module scope: `depth` = import hops beyond the module itself.
 - **Clustering reuse.** Cluster membership comes from the existing
@@ -228,15 +234,61 @@ class ReportArchive:
         return GraphStore(self._graph_path(job_id))
 ```
 
-### Step 7: Run — verify 7 passed (1 new store + 6 reports)
+### Step 7: Run — verify 8 passed (2 new store + 6 reports)
 
 Run: `python -m pytest tests/test_store.py tests/test_reports.py -v`
-Expected: 10 passed (9 store + 1 new) and 6 passed (reports).
+Expected: 11 passed (9 store + 2 new) and 6 passed (reports).
 
-### Step 8: Commit
+### Step 8: Fix src-layout import matching in `src/clio/store.py`
+
+Replace the `modules_importing` method with this version (adds the src-layout alias
+match — a module like `src.clio.orchestrator` imported in code as `clio.orchestrator`):
+
+```python
+    def modules_importing(self, module: str) -> list[str]:
+        """Modules importing `module` directly, any of its submodules, or —
+        for src-layout repos — a known module whose dotted path ends with the
+        import target's module part (module "src.clio.x" imported as "clio.x")."""
+        with self._session() as conn:
+            rows = conn.execute(
+                "SELECT src, target FROM imports ORDER BY src, target"
+            ).fetchall()
+        srcs: set[str] = set()
+        for src, target in rows:
+            tmod = target.rsplit(".", 1)[0] if "." in target else target
+            if (
+                module == target
+                or module == tmod
+                or target.startswith(module + ".")
+                or module.endswith("." + tmod)
+            ):
+                srcs.add(src)
+        return sorted(srcs)
+```
+
+### Step 9: Append the src-layout regression test to `tests/test_store.py`
+
+```python
+def test_modules_importing_src_layout_alias(tmp_path, write_tree):
+    root = write_tree({
+        "src/clio/__init__.py": "",
+        "src/clio/core.py": "def f():\n    return 1\n",
+        "src/clio/main.py": "from clio.core import f\n",
+    })
+    db = tmp_path / "graph.db"
+    GraphStore(db).save(build_repo_graph(root))
+    assert GraphStore(db).modules_importing("src.clio.core") == ["src.clio.main"]
+```
+
+### Step 10: Run — verify the new store test passes and no regressions
+
+Run: `python -m pytest tests/test_store.py -v`
+Expected: 11 passed.
+
+### Step 11: Commit
 
 `git add src/clio/store.py src/clio/reports.py tests/conftest.py tests/test_store.py tests/test_reports.py`
-then `git commit -m "feat: queryable report archive over job artifacts"`
+then `git commit -m "feat: queryable report archive over job artifacts; src-layout import matching"`
 
 ---
 
@@ -327,6 +379,18 @@ def test_module_transitive_importers(tmp_path, seed_job):
     impact = impact_of_module(ReportArchive(root), "job-x", "pkg_a.one", depth=2)
     assert impact.affected_modules == ["pkg_a.one", "pkg_b.two", "pkg_c.three"]
     assert impact.verdict == "cross-cutting"
+
+
+def test_symbol_impact_src_layout(tmp_path, seed_job):
+    root = tmp_path / "root"
+    seed_job(root, "job-x", "2026-08-10T00:00:00+00:00", {
+        "src/clio/__init__.py": "",
+        "src/clio/core.py": "def f():\n    return 1\n",
+        "src/clio/main.py": "from clio.core import f\n",
+    })
+    impact = impact_of_symbol(ReportArchive(root), "job-x", "src.clio.core::f")
+    assert impact.affected_modules == ["src.clio.main"]
+    assert impact.verdict == "contained"
 ```
 
 ### Step 2: Run — verify FAIL
@@ -443,10 +507,10 @@ def impact_of_module(
     )
 ```
 
-### Step 4: Run — verify 7 passed
+### Step 4: Run — verify 8 passed
 
 Run: `python -m pytest tests/test_impact.py -v`
-Expected: 7 passed.
+Expected: 8 passed.
 
 ### Step 5: Commit
 
@@ -527,16 +591,19 @@ Expected: 5 passed (3 existing + 2 new).
 
 ## Full-suite verification
 
-- [ ] Run `python -m pytest -q` — expected **128 passed** (112 + 1 store + 6 reports + 7 impact + 2 cli = 128). All offline.
+- [ ] Run `python -m pytest -q` — expected **130 passed** (112 + 2 store + 6 reports + 8 impact + 2 cli = 130). All offline.
 - [ ] Manual demo (no API key needed):
 
 ```bash
-python -m clio.cli https://github.com/omhome16/Clio.git --impact clio.orchestrator::run
+python -m clio.cli https://github.com/omhome16/Clio.git --impact src.clio.orchestrator::Orchestrator.run
 ```
 
 Expected: the normal event stream, then `IMPACT:` + JSON with `"verdict": "cross-cutting"`
-(Clio's `clio.*` code is called from `tests.*` and the CLI — expect 2+ clusters), a
-non-empty `callers` list, and `affected_modules` spanning `clio` and `tests` packages.
+(the orchestrator's `run` is imported by `src.clio.cli` and `tests.test_orchestrator`),
+`callers` may be empty (external calls aren't resolved), and `affected_modules` spanning
+the `src` and `tests` clusters. Note the `src.` prefix: Clio uses a src-layout, so module
+names come from file paths while imports use the shorter `clio.*` names — that mismatch
+is exactly what the src-layout alias in `modules_importing` resolves.
 - [ ] Update `README.md` status table: mark M3 and M4 done.
 - [ ] Commit: `git add README.md docs/plans/2026-08-10-m3-m4-persistence-impact.md` then `git commit -m "docs: mark M3 and M4 complete in README"`
 - [ ] Merge to `main`, push, delete `feat/m3-m4-persistence-impact`.
