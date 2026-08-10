@@ -17,7 +17,9 @@ from clio.clustering import cluster_by_package
 from clio.config import Limits, get_limits, get_provider
 from clio.events import EVENT_ASK_FINAL, EVENT_ASK_TOOL, Event, EventBus
 from clio.job import load_job
+from clio.impact import impact_of_module
 from clio.llm import make_client
+from clio.map import layout_graph
 from clio.orchestrator import Orchestrator
 from clio.reports import ReportArchive
 from clio.sandbox import Sandbox
@@ -602,7 +604,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/jobs/"):
             rest = path[len("/api/jobs/"):]
-            if rest.endswith("/graph"):
+            if rest.endswith("/graph/map"):
+                self._job_map(rest[: -len("/graph/map")], parsed.query)
+            elif rest.endswith("/graph"):
                 self._job_graph(rest[: -len("/graph")])
             else:
                 self._job_report(rest)
@@ -652,6 +656,18 @@ class _Handler(BaseHTTPRequestHandler):
             for c in cluster_by_package(graph)
         ]
         self._send_json(200, {"stats": archive.graph_store(job_id).stats(), "clusters": clusters})
+
+    def _job_map(self, job_id: str, query: str) -> None:
+        archive = ReportArchive(self.server.dashboard.root)
+        graph = archive.get_graph(job_id)
+        if graph is None:
+            self._json_error(404, f"no graph for {job_id}")
+            return
+        payload = layout_graph(graph)
+        module = urllib.parse.parse_qs(query).get("impact", [""])[0]
+        if module:
+            payload["impact"] = impact_of_module(archive, job_id, module).to_dict()
+        self._send_json(200, payload)
 
     def _stream(self, job_id: str) -> None:
         self.send_response(200)

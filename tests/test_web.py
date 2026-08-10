@@ -74,6 +74,57 @@ def test_api_job_graph(dashboard, seed_job):
     assert _get(url + "/api/jobs/nope/graph")[0] == 404
 
 
+def test_api_job_map_payload(dashboard, seed_job):
+    dash, url = dashboard
+    seed_job(dash.root, "job-1", "2026-08-10T00:00:00+00:00", {
+        "pkg/__init__.py": "",
+        "pkg/one.py": "def a():\n    return 1\n",
+        "pkg/two.py": "import pkg.one\ndef b():\n    return 1\n",
+        "main.py": "import pkg.two\n",
+    })
+    status, body = _get(url + "/api/jobs/job-1/graph/map")
+    assert status == 200
+    payload = json.loads(body)
+    assert {n["module"] for n in payload["nodes"]} == {"main", "pkg", "pkg.one", "pkg.two"}
+    for node in payload["nodes"]:
+        assert set(node) == {"id", "module", "cluster", "symbols", "x", "y"}
+    assert {e["to"] for e in payload["edges"] if e["from"] == "main"} == {"pkg.two"}
+    assert ("pkg.two", "pkg.one", "import") in {
+        (e["from"], e["to"], e["kind"]) for e in payload["edges"]
+    }
+    assert _get(url + "/api/jobs/nope/graph/map")[0] == 404
+
+
+def test_api_job_map_impact_param(dashboard, seed_job):
+    dash, url = dashboard
+    seed_job(dash.root, "job-1", "2026-08-10T00:00:00+00:00", {
+        "pkg/__init__.py": "",
+        "pkg/one.py": "def a():\n    return 1\n",
+        "pkg/two.py": "import pkg.one\ndef b():\n    return 1\n",
+        "main.py": "import pkg.two\n",
+    })
+    status, body = _get(url + "/api/jobs/job-1/graph/map?impact=pkg.one")
+    assert status == 200
+    impact = json.loads(body)["impact"]
+    assert impact["scope"] == "pkg.one"
+    assert impact["verdict"] == "cross-cutting"
+    assert impact["affected_modules"] == ["main", "pkg.one", "pkg.two"]
+    status, body = _get(url + "/api/jobs/job-1/graph/map?impact=unknown")
+    assert json.loads(body)["impact"]["verdict"] == "missing"
+
+
+def test_api_job_map_deterministic_http(dashboard, seed_job):
+    dash, url = dashboard
+    seed_job(dash.root, "job-1", "2026-08-10T00:00:00+00:00", {
+        "pkg/__init__.py": "",
+        "pkg/one.py": "def a():\n    return 1\n",
+        "main.py": "import pkg.one\n",
+    })
+    _, first = _get(url + "/api/jobs/job-1/graph/map")
+    _, second = _get(url + "/api/jobs/job-1/graph/map")
+    assert first == second
+
+
 def test_api_unknown_route(dashboard):
     _, url = dashboard
     assert _get(url + "/api/nope")[0] == 404
