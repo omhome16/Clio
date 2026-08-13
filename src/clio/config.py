@@ -42,6 +42,11 @@ class Limits:
     task_backoff_s: float = 0.5
     cheap_model: str = "gemini-2.0-flash"
     frontier_model: str = "gemini-2.5-pro"
+    rpm: int = 5
+    max_retries: int = 2
+    rate_limit: bool = True
+    repo_map_chars: int = 1200
+    aspect_pack_chars: int = 6000
 
 
 def get_limits() -> Limits:
@@ -60,6 +65,11 @@ def get_limits() -> Limits:
         task_backoff_s=_env_float("CLIO_TASK_BACKOFF_S", 0.5),
         cheap_model=os.environ.get("CLIO_CHEAP_MODEL", "gemini-2.0-flash"),
         frontier_model=os.environ.get("CLIO_FRONTIER_MODEL", "gemini-2.5-pro"),
+        rpm=max(_env_int("CLIO_RPM", 5), 1),
+        max_retries=_env_int("CLIO_MAX_RETRIES", 2),
+        rate_limit=os.environ.get("CLIO_RATE_LIMIT", "1") not in ("0", "false", "no"),
+        repo_map_chars=_env_int("CLIO_REPO_MAP_CHARS", 1200),
+        aspect_pack_chars=_env_int("CLIO_ASPECT_PACK_CHARS", 6000),
     )
 
 
@@ -81,6 +91,6 @@ def load_env() -> None:
 
 
 def get_provider() -> str:
-    """LLM provider name from ``CLIO_PROVIDER`` (default ``"mock"``)."""
+    """LLM provider name from ``CLIO_PROVIDER`` (default ``"gemini"``)."""
     load_env()
-    return os.environ.get("CLIO_PROVIDER", "mock")
+    return os.environ.get("CLIO_PROVIDER", "gemini")

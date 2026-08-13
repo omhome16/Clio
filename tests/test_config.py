@@ -104,11 +104,9 @@ def test_dotenv_supplies_limits(monkeypatch, tmp_path):
 
 def test_get_provider_from_env(monkeypatch):
     monkeypatch.setenv("CLIO_PROVIDER", "groq")
-    monkeypatch.delenv("CLIO_ENV_FILE", raising=False)
     assert get_provider() == "groq"
 
 
-def test_get_provider_defaults_to_mock(monkeypatch):
+def test_get_provider_defaults_to_gemini(monkeypatch):
     monkeypatch.delenv("CLIO_PROVIDER", raising=False)
-    monkeypatch.delenv("CLIO_ENV_FILE", raising=False)
-    assert get_provider() == "mock"
+    assert get_provider() == "gemini"

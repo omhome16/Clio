@@ -3,11 +3,13 @@
 import argparse
 import asyncio
 import json
+import logging
 
 from clio.config import Limits, get_limits, get_provider
 from clio.events import Event, EventBus, SseFormatter
 from clio.impact import impact_of_symbol
 from clio.llm import make_client
+from clio.logging import setup_logging
 from clio.reports import ReportArchive
 from clio.orchestrator import Orchestrator
 from clio.sandbox import Sandbox
@@ -17,8 +19,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="clio", description="Analyze a git repository")
     parser.add_argument("url", help="https://github.com/... or file:// repo URL")
     parser.add_argument(
-        "--provider", choices=["mock", "gemini", "groq"], default=get_provider(),
-        help="LLM provider (default: $CLIO_PROVIDER, mock if unset)",
+        "--provider", choices=["gemini", "groq"], default=get_provider(),
+        help="LLM provider (default: $CLIO_PROVIDER, gemini if unset)",
     )
     parser.add_argument("--job-id", default=None, help="override the generated job id")
     parser.add_argument(
@@ -47,9 +49,14 @@ async def amain(args: argparse.Namespace) -> int:
     return 0
 
 
-def main() -> None:
-    raise SystemExit(asyncio.run(amain(build_parser().parse_args())))
+def main() -> int:
+    setup_logging()
+    try:
+        return asyncio.run(amain(build_parser().parse_args()))
+    except Exception:
+        logging.getLogger("clio").exception("analysis failed")
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

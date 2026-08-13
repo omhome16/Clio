@@ -5,12 +5,14 @@ import sys
 import pytest
 
 from clio.cli import amain, build_parser
+from clio.config import get_limits
+from clio.llm import FakeLLM, fake_handler
 
 
 def test_parser_defaults():
     args = build_parser().parse_args(["https://github.com/x/y.git"])
     assert args.url == "https://github.com/x/y.git"
-    assert args.provider == "mock"
+    assert args.provider == "gemini"
 
 
 def test_parser_invalid_provider_rejected():
@@ -18,8 +20,17 @@ def test_parser_invalid_provider_rejected():
         build_parser().parse_args(["https://github.com/x/y.git", "--provider", "nope"])
 
 
-async def test_cli_end_to_end_mock(tmp_path, local_repo, monkeypatch, capsys):
+def _inject_fake_client(monkeypatch):
+    """Offline stand-in: the CLI must never reach a real provider in tests."""
+    monkeypatch.setattr(
+        "clio.cli.make_client",
+        lambda provider, limits=None: FakeLLM(handler=fake_handler(get_limits())),
+    )
+
+
+async def test_cli_end_to_end_fake(tmp_path, local_repo, monkeypatch, capsys):
     monkeypatch.setenv("CLIO_WORKSPACE_ROOT", str(tmp_path / "sandbox"))
+    _inject_fake_client(monkeypatch)
     args = build_parser().parse_args([local_repo.as_uri()])
     assert await amain(args) == 0
     out = capsys.readouterr().out
@@ -35,6 +46,7 @@ async def test_cli_end_to_end_mock(tmp_path, local_repo, monkeypatch, capsys):
 
 async def test_cli_impact_e2e(tmp_path, local_repo, monkeypatch, capsys):
     monkeypatch.setenv("CLIO_WORKSPACE_ROOT", str(tmp_path / "sandbox"))
+    _inject_fake_client(monkeypatch)
     args = build_parser().parse_args([local_repo.as_uri(), "--impact", "app.service::greet"])
     assert await amain(args) == 0
     out = capsys.readouterr().out
@@ -48,6 +60,7 @@ async def test_cli_impact_e2e(tmp_path, local_repo, monkeypatch, capsys):
 
 async def test_cli_impact_missing_symbol(tmp_path, local_repo, monkeypatch, capsys):
     monkeypatch.setenv("CLIO_WORKSPACE_ROOT", str(tmp_path / "sandbox"))
+    _inject_fake_client(monkeypatch)
     args = build_parser().parse_args([local_repo.as_uri(), "--impact", "app::ghost"])
     assert await amain(args) == 0
     out = capsys.readouterr().out
