@@ -1,8 +1,10 @@
 # src/clio/graph.py
-"""Repo graph extraction using the stdlib `ast` module (Python codebases).
+"""Repo graph extraction.
 
-The parser is isolated behind build_repo_graph(); other languages (tree-sitter
-etc.) can plug in later without touching the store or clustering layers.
+Python codebases get deep symbol/call extraction via the stdlib ``ast``
+module. Other languages fall back to a regex tier (:mod:`clio.extractors`)
+for file-level data: imports + classes/functions with line numbers. The store
+and clustering layers are language-agnostic, so the two tiers share one model.
 """
 from __future__ import annotations
 
@@ -10,6 +12,8 @@ import ast
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from clio.extractors import detect_language, extract, foreign_module_name
 
 IGNORED_DIRS = {
     ".git", ".hg", ".svn", "__pycache__", ".venv", "venv", "env",
@@ -20,7 +24,7 @@ IGNORED_DIRS = {
 @dataclass
 class Symbol:
     name: str        # "foo", "Thing", or "Thing.beta" for methods
-    kind: str        # "function" | "class" | "method"
+    kind: str        # "function" | "class" | "method" | language-specific
     module: str      # dotted package path, e.g. "clio.orchestrator"
     line: int
 
@@ -40,6 +44,7 @@ class RepoGraph:
     imports: dict[str, list[str]] = field(default_factory=dict)  # module -> targets
     calls: list[CallEdge] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)             # unparseable files
+    languages: dict[str, str] = field(default_factory=dict)      # module -> lang
 
     @property
     def module_count(self) -> int:
@@ -52,6 +57,12 @@ class RepoGraph:
     @property
     def call_count(self) -> int:
         return len(self.calls)
+
+    def language_stats(self) -> dict:
+        counts: dict[str, int] = defaultdict(int)
+        for lang in self.languages.values():
+            counts[lang] += 1
+        return dict(sorted(counts.items()))
 
 
 def module_name_for(path: Path, root: Path) -> str:
@@ -73,6 +84,18 @@ def iter_python_files(root: Path) -> list[Path]:
             continue
         files.append(path)
     return files
+
+
+def iter_source_files(root: Path) -> list[Path]:
+    """Every indexable source file across supported languages, skipping
+    ignored dirs and files whose language we can't detect."""
+    for path in sorted(root.rglob("*")):
+        if path.is_dir():
+            continue
+        if any(part in IGNORED_DIRS for part in path.parts):
+            continue
+        if detect_language(path) is not None:
+            yield path
 
 
 def parse_module(
@@ -204,19 +227,39 @@ class _ModuleVisitor(ast.NodeVisitor):
 def build_repo_graph(root: Path) -> RepoGraph:
     root = Path(root)
     graph = RepoGraph(root=str(root))
-    for path in iter_python_files(root):
-        module = module_name_for(path, root)
-        if not module:
+    for path in iter_source_files(root):
+        lang = detect_language(path) or ""
+        if lang == "python":
+            module = module_name_for(path, root)
+            if not module:
+                continue
+            try:
+                symbols, imports, calls = parse_module(
+                    path.read_text(encoding="utf-8", errors="replace"), module
+                )
+            except SyntaxError:
+                graph.skipped.append(str(path.relative_to(root)))
+                continue
+            graph.modules[module] = str(path.relative_to(root))
+            graph.symbols.extend(symbols)
+            graph.imports[module] = sorted(imports)
+            graph.calls.extend(calls)
+            graph.languages[module] = "python"
             continue
+        # regex tier for every other supported language
+        module = foreign_module_name(path, root)
+        importer_dir = module.rsplit("/", 1)[0] if "/" in module else ""
         try:
-            symbols, imports, calls = parse_module(
-                path.read_text(encoding="utf-8", errors="replace"), module
+            symbols, imports = extract(
+                path.read_text(encoding="utf-8", errors="replace"),
+                lang, importer_dir=importer_dir,
             )
-        except SyntaxError:
+        except OSError:
             graph.skipped.append(str(path.relative_to(root)))
             continue
         graph.modules[module] = str(path.relative_to(root))
-        graph.symbols.extend(symbols)
+        for name, kind, line in symbols:
+            graph.symbols.append(Symbol(name=name, kind=kind, module=module, line=line))
         graph.imports[module] = sorted(imports)
-        graph.calls.extend(calls)
+        graph.languages[module] = lang
     return graph

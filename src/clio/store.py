@@ -2,6 +2,7 @@
 """SQLite persistence and querying for RepoGraph snapshots."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -68,6 +69,10 @@ class GraphStore:
             conn.execute("DELETE FROM imports")
             conn.execute("DELETE FROM calls")
             conn.execute("INSERT INTO meta(key, value) VALUES ('root', ?)", (graph.root,))
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES ('languages', ?)",
+                (json.dumps(graph.languages),),
+            )
             conn.executemany(
                 "INSERT INTO modules(name, path) VALUES (?, ?)",
                 sorted(graph.modules.items()),
@@ -113,21 +118,48 @@ class GraphStore:
                     "SELECT caller, callee, line FROM calls ORDER BY id"
                 )
             ]
+        languages: dict[str, str] = {}
+        raw = meta.get("languages")
+        if raw:
+            try:
+                languages = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                languages = {}
         return RepoGraph(
             root=meta.get("root", ""),
             modules=modules,
             symbols=symbols,
             imports=imports,
             calls=calls,
+            languages=languages,
         )
 
     def stats(self) -> dict:
+        """Quick counts without rehydrating the whole graph."""
         with self._session() as conn:
-            modules = conn.execute("SELECT COUNT(*) FROM modules").fetchone()[0]
-            symbols = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
-            imports = conn.execute("SELECT COUNT(*) FROM imports").fetchone()[0]
-            calls = conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
-        return {"modules": modules, "symbols": symbols, "imports": imports, "calls": calls}
+            return {
+                "modules": conn.execute("SELECT COUNT(*) FROM modules").fetchone()[0],
+                "symbols": conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0],
+                "imports": conn.execute("SELECT COUNT(*) FROM imports").fetchone()[0],
+                "calls": conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0],
+            }
+
+    def language_stats(self) -> dict[str, int]:
+        """Per-language module counts from the stored snapshot metadata."""
+        with self._session() as conn:
+            row = conn.execute(
+                "SELECT value FROM meta WHERE key = 'languages'"
+            ).fetchone()
+        if not row or not row[0]:
+            return {}
+        try:
+            languages = json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        counts = {lang: 0 for lang in set(languages.values())}
+        for lang in languages.values():
+            counts[lang] += 1
+        return dict(sorted(counts.items()))
 
     def callers_of(self, symbol_id: str) -> list[tuple[str, int]]:
         with self._session() as conn:

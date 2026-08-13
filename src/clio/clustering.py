@@ -16,17 +16,24 @@ class Cluster:
     external_edges: int
 
 
+def _segments(module: str) -> list[str]:
+    """Path segments for dotted (Python) or slash (foreign) module ids."""
+    return [s for s in module.replace("/", ".").split(".") if s]
+
+
 def top_prefix(module: str) -> str:
-    """First dotted segment of a module or import target."""
-    return module.split(".", 1)[0]
+    """First package segment of a module or import target."""
+    parts = _segments(module)
+    return parts[0] if parts else module
 
 
 def cluster_by_package(graph: RepoGraph, depth: int = 1) -> list[Cluster]:
-    """Group modules by the first `depth` dotted segments of their package path.
-    Modules shorter than `depth` stay in their own cluster. Deterministic order."""
+    """Group modules by the first `depth` package segments (dot or slash
+    separated). Modules shorter than `depth` stay in their own cluster.
+    Deterministic order."""
     buckets: dict[str, list[str]] = defaultdict(list)
     for module in graph.modules:
-        parts = module.split(".")
+        parts = _segments(module)
         prefix = ".".join(parts[:depth]) if len(parts) > depth else module
         buckets[prefix].append(module)
     clusters: list[Cluster] = []
@@ -57,7 +64,7 @@ def connected_components(graph: RepoGraph) -> list[list[str]]:
         if src not in graph.modules:
             continue
         for target in targets:
-            top = target.split(".", 1)[0]
+            top = top_prefix(target)
             if top in graph.modules:
                 adj[src].add(top)
                 adj[top].add(src)
