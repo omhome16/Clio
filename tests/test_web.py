@@ -89,6 +89,7 @@ def test_api_job_graph(dashboard, seed_job):
     payload = json.loads(body)
     assert payload["stats"]["modules"] == 1
     assert payload["stats"]["symbols"] == 1
+    assert payload["languages"] == {"python": 1}
     assert payload["clusters"] and payload["clusters"][0]["name"] == "a"
     assert _get(url + "/api/jobs/nope/graph")[0] == 404
 

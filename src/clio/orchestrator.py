@@ -147,6 +147,7 @@ class Orchestrator:
                 "symbols": graph.symbol_count,
                 "calls": graph.call_count,
                 "clusters": len(cluster_by_package(graph)),
+                "languages": graph.language_stats(),
             }
             jobs_dir(root).mkdir(parents=True, exist_ok=True)
             GraphStore(jobs_dir(root) / f"{job.job_id}.graph.db").save(graph)

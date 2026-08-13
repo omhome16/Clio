@@ -688,8 +688,16 @@ async function loadMap(jobId) {
   const payload = await resp.json();
   renderMap(svg, payload);
   detail.className = "empty";
-  detail.textContent = payload.nodes.length + " modules, " + payload.edges.length +
+  let summary = payload.nodes.length + " modules, " + payload.edges.length +
     " edges \u2014 hover to trace, click a module for detail.";
+  const langs = await fetch("/api/jobs/" + jobId + "/graph");
+  if (langs.ok && mapJob === jobId) {
+    const body = await langs.json();
+    const parts = Object.entries(body.languages || {})
+      .map(([lang, n]) => lang + " \u00d7" + n);
+    if (parts.length) summary += " \u00b7 " + parts.join(", ");
+  }
+  detail.textContent = summary;
 }
 
 function renderMap(svg, payload) {
@@ -1184,7 +1192,11 @@ class _Handler(BaseHTTPRequestHandler):
              "external_edges": c.external_edges}
             for c in cluster_by_package(graph)
         ]
-        self._send_json(200, {"stats": archive.graph_store(job_id).stats(), "clusters": clusters})
+        self._send_json(200, {
+            "stats": archive.graph_store(job_id).stats(),
+            "languages": archive.graph_store(job_id).language_stats(),
+            "clusters": clusters,
+        })
 
     def _job_map(self, job_id: str, query: str) -> None:
         archive = ReportArchive(self.server.dashboard.root)
