@@ -2,8 +2,11 @@
 """Zero-dependency local dashboard: live event stream + archive API."""
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
+import logging
+import shutil
 import threading
 import time
 import urllib.parse
@@ -16,9 +19,10 @@ from clio.ask import AskSession
 from clio.clustering import cluster_by_package
 from clio.config import Limits, get_limits, get_provider
 from clio.events import EVENT_ASK_FINAL, EVENT_ASK_TOOL, Event, EventBus
-from clio.job import load_job
 from clio.impact import impact_of_module
+from clio.job import jobs_dir, load_job
 from clio.llm import make_client
+from clio.logging import setup_logging
 from clio.map import layout_graph
 from clio.orchestrator import Orchestrator
 from clio.reports import ReportArchive
@@ -33,169 +37,278 @@ INDEX_HTML = """<!doctype html>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23F4F0E6'/%3E%3Cpath d='M8 1.5v13M1.5 8h13' stroke='%231E50C8' stroke-width='2.5'/%3E%3C/svg%3E">
 <style>
 :root { color-scheme: light; }
-html[data-theme="light"] { --paper:#F4F0E6; --paper-2:#ECE6D6; --ink:#26221B;
-  --muted:#6F675A; --rule:#D8D1C0; --blue:#1E50C8; --blue-d:#173CA0;
-  --ok:#336B42; --bad:#B23A2D; }
-html[data-theme="dark"] { color-scheme: dark; --paper:#191512; --paper-2:#231F1A;
-  --ink:#EFE9DC; --muted:#A89F8E; --rule:#3B362C; --blue:#7FA5F5;
-  --blue-d:#9DB9F7; --ok:#7FB98F; --bad:#E07B6F; }
+html[data-theme="light"] { --paper:#F6F5F1; --paper-2:#FFFFFF; --ink:#20242C;
+  --muted:#70767F; --rule:#E3E1DA; --blue:#2F6FED; --blue-d:#1F5CD8;
+  --blue-soft:rgba(47,111,237,.09); --ok:#2E9E5B; --ok-soft:rgba(46,158,91,.10);
+  --bad:#D64545; --bad-soft:rgba(214,69,69,.10);
+  --shadow:0 1px 2px rgba(20,24,32,.04), 0 6px 20px rgba(20,24,32,.05); }
+html[data-theme="dark"] { color-scheme:dark; --paper:#0F1217; --paper-2:#171B22;
+  --ink:#E8EBF1; --muted:#98A1B0; --rule:#2A303A; --blue:#6FA8FF; --blue-d:#8DBBFF;
+  --blue-soft:rgba(111,168,255,.12); --ok:#45C47C; --ok-soft:rgba(69,196,124,.12);
+  --bad:#F0746E; --bad-soft:rgba(240,116,110,.12);
+  --shadow:0 1px 2px rgba(0,0,0,.28), 0 8px 24px rgba(0,0,0,.32); }
 * { box-sizing:border-box; }
-body { margin:0; background:var(--paper); color:var(--ink);
-       font:13px/1.6 ui-monospace,"Cascadia Mono",Consolas,monospace; }
-::selection { background:var(--blue); color:var(--paper); }
+html { height:100%; }
+body { margin:0; min-height:100%; background:var(--paper); color:var(--ink);
+  font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+::selection { background:var(--blue); color:#fff; }
 a, button, input { font:inherit; color:inherit; }
 :focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
 
-/* masthead — the one moment where the typeset voice appears */
-header { border-bottom:1px solid var(--ink);
-  background-image:linear-gradient(var(--rule) 1px, transparent 1px),
-                   linear-gradient(90deg, var(--rule) 1px, transparent 1px);
-  background-size:28px 28px; }
-.mast { display:flex; align-items:baseline; justify-content:space-between;
-        gap:16px; flex-wrap:wrap; max-width:1240px; margin:0 auto;
-        padding:18px 32px 16px; }
-.brand { display:flex; align-items:center; gap:14px; }
-.crosshair { position:relative; width:16px; height:16px; flex:none; }
+header { position:sticky; top:0; z-index:30; border-bottom:1px solid var(--rule);
+  background:color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter:blur(10px); }
+.mast { display:flex; align-items:center; justify-content:space-between; gap:16px;
+  flex-wrap:wrap; max-width:1400px; margin:0 auto; padding:14px 32px; }
+.brand { display:flex; align-items:center; gap:12px; }
+.crosshair { width:34px; height:34px; border-radius:10px; position:relative;
+  background:var(--blue-soft);
+  border:1px solid color-mix(in srgb, var(--blue) 35%, transparent); }
 .crosshair::before, .crosshair::after { content:""; position:absolute;
   background:var(--blue); }
-.crosshair::before { left:7px; top:0; width:2px; height:16px; }
-.crosshair::after { left:0; top:7px; width:16px; height:2px; }
-h1 { margin:0; font-family:Georgia,"Times New Roman",serif; font-size:22px;
-     font-weight:600; letter-spacing:.22em; }
-h1 .sub { font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
-          font-size:11px; font-weight:400; letter-spacing:.16em;
-          color:var(--muted); text-transform:uppercase; margin-left:14px; }
-.sys { display:flex; align-items:center; gap:8px; font-size:11px;
-       letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
-.lamp { width:8px; height:8px; background:var(--muted); }
-.lamp.running { background:var(--blue); animation:blink 1s steps(2,start) infinite; }
+.crosshair::before { left:16px; top:8px; width:2px; height:18px; border-radius:1px; }
+.crosshair::after { left:8px; top:16px; width:18px; height:2px; border-radius:1px; }
+h1 { margin:0; font-size:20px; font-weight:750; letter-spacing:.22em; line-height:1.2; }
+h1 .sub { font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  font-size:10px; font-weight:500; letter-spacing:.18em; color:var(--muted);
+  text-transform:uppercase; margin-left:12px; }
+.sys { display:flex; align-items:center; gap:10px; }
+.provider-pill { display:inline-flex; align-items:center; gap:7px;
+  padding:5px 12px; border:1px solid var(--rule); border-radius:999px;
+  background:var(--paper-2);
+  font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+.lamp { width:8px; height:8px; border-radius:50%; background:var(--muted); flex:none; }
+.lamp.running { background:var(--blue); animation:pulse 1.2s infinite; }
 .lamp.ok { background:var(--ok); }
 .lamp.bad { background:var(--bad); }
-@keyframes blink { to { visibility:hidden; } }
+@keyframes pulse {
+  0% { box-shadow:0 0 0 0 color-mix(in srgb, var(--blue) 45%, transparent); }
+  70% { box-shadow:0 0 0 7px transparent; }
+  100% { box-shadow:0 0 0 0 transparent; } }
 
-main { display:grid; grid-template-columns:340px minmax(0,1fr); gap:28px;
-       max-width:1240px; margin:0 auto; padding:28px 32px 40px; }
-@media (max-width:920px) { main { grid-template-columns:1fr; } }
+/* ---- bento grid ---- */
+.bento { display:grid; grid-template-columns:repeat(12, 1fr);
+  grid-auto-rows:minmax(0,auto); gap:20px;
+  max-width:1400px; margin:0 auto; padding:24px 32px 48px; align-items:start; }
+.cell { background:var(--paper-2); border:1px solid var(--rule);
+  border-radius:16px; box-shadow:var(--shadow); padding:18px 20px; min-width:0; }
+.hero { grid-column:1/5; }
+.status { grid-column:1/5; }
+.history { grid-column:1/5; grid-row:3/9; }
+.ask { grid-column:5/13; grid-row:1/4; }
+.ledger { grid-column:5/13; grid-row:4/5; }
+.map { grid-column:5/10; grid-row:5/9; }
+.tree { grid-column:10/13; grid-row:5/9; }
+.report { grid-column:5/13; grid-row:9/10; }
+@media (max-width:1100px) {
+  .bento { grid-template-columns:1fr; }
+  .hero, .status, .history, .ask, .ledger, .map, .tree, .report {
+    grid-column:1/2; grid-row:auto; }
+}
+@media (max-width:920px) {
+  .ask { position:fixed; top:0; right:0; bottom:0; width:400px; max-width:94vw;
+    transform:translateX(103%); transition:transform .2s cubic-bezier(.4,0,.2,1);
+    display:flex; flex-direction:column; z-index:40; }
+  .ask.open { transform:none; box-shadow:-16px 0 40px rgba(0,0,0,.22); }
+  .ask .ask-log { flex:1; }
+}
 
-.eyebrow { margin:0 0 12px; font-size:11px; font-weight:400;
-           letter-spacing:.16em; text-transform:uppercase; color:var(--muted); }
-.eyebrow::before { content:"\\258D\\00a0 "; color:var(--blue); }
+.eyebrow { margin:0 0 14px; font-size:11px; font-weight:650;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--muted);
+  display:flex; align-items:center; gap:8px; }
+.eyebrow::before { content:""; width:6px; height:6px; border-radius:2px;
+  background:var(--blue); }
+.eyebrow .spacer { flex:1; }
+.eyebrow .tag-sub { font-weight:500; letter-spacing:.1em; }
 
-.field-label { display:block; margin-bottom:6px; font-size:11px;
-               letter-spacing:.14em; text-transform:uppercase;
-               color:var(--muted); }
-input[type=text] { width:100%; margin-bottom:14px; padding:9px 2px;
-  background:transparent; border:0; border-bottom:1px solid var(--ink);
-  outline:none; font-size:13px; }
-input[type=text]:focus { border-bottom-color:var(--blue); }
+.field-label { display:block; margin-bottom:7px; font-size:11px; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+input[type=text] { width:100%; margin-bottom:12px; padding:11px 14px;
+  background:var(--paper); border:1px solid var(--rule); border-radius:10px;
+  outline:none; font-size:13px; transition:border-color .15s, box-shadow .15s; }
+input[type=text]:focus { border-color:var(--blue); box-shadow:0 0 0 3px var(--blue-soft); }
 input::placeholder { color:var(--muted); }
-button { width:100%; padding:11px 16px; background:var(--blue); color:var(--paper);
-  border:1px solid var(--blue); border-radius:0; cursor:pointer;
-  font-size:12px; font-weight:600; letter-spacing:.14em;
-  text-transform:uppercase; }
+
+button { width:100%; padding:11px 16px; border-radius:10px; border:1px solid var(--blue);
+  background:var(--blue); color:#fff; cursor:pointer; font-size:12px; font-weight:650;
+  letter-spacing:.08em; text-transform:uppercase;
+  transition:background .15s, transform .1s, box-shadow .15s; }
 button:hover { background:var(--blue-d); border-color:var(--blue-d); }
 button:active { transform:translateY(1px); }
-button:disabled { opacity:.45; cursor:default; }
-.theme-btn { width:auto; padding:6px 12px; background:transparent;
-  color:var(--muted); border:1px solid var(--rule); font-size:11px; }
-.theme-btn:hover { color:var(--ink); border-color:var(--ink); }
-.ask { position:fixed; top:0; right:0; bottom:0; width:360px; max-width:92vw;
-  background:var(--paper); border-left:1px solid var(--rule); z-index:20;
-  transform:translateX(102%); transition:transform .18s ease-out;
-  display:flex; flex-direction:column; padding:18px 22px; }
-.ask.open { transform:none; box-shadow:-12px 0 32px rgba(0,0,0,.18); }
-.ask-head { display:flex; justify-content:space-between; align-items:center; }
-.ask-log { flex:1; overflow:auto; border:1px solid var(--rule); margin:10px 0;
-  padding:10px; display:flex; flex-direction:column; gap:8px; }
-.bubble { padding:7px 10px; border:1px solid var(--rule);
-  background:var(--paper-2); font-size:12px; white-space:pre-wrap; }
-.bubble.user { background:transparent; border-color:var(--blue); }
-.bubble.bad { border-color:var(--bad); color:var(--bad); }
-.tool-line { font-size:10px; letter-spacing:.08em; text-transform:uppercase;
-  color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.tool-line.ok::before { content:"\2699\00a0"; color:var(--ok); }
-.tool-line.bad::before { content:"\2715\00a0"; color:var(--bad); }
-#ask-q { margin-bottom:10px; }
-.state { margin-top:18px; border-top:1px solid var(--rule); }
-.state-row { display:flex; justify-content:space-between; gap:12px;
-  padding:8px 2px; border-bottom:1px solid var(--rule); font-size:12px; }
-.state-row span:first-child { font-size:11px; letter-spacing:.1em;
+button:disabled { opacity:.5; cursor:default; }
+.theme-btn { width:auto; padding:7px 14px; border-radius:999px; background:transparent;
+  color:var(--muted); border:1px solid var(--rule); }
+.theme-btn:hover { color:var(--ink); border-color:var(--ink); background:var(--paper); }
+.danger-btn { width:auto; padding:7px 14px; border-radius:999px; background:transparent;
+  color:var(--bad); border:1px solid color-mix(in srgb, var(--bad) 45%, transparent); }
+.danger-btn:hover { background:var(--bad-soft); border-color:var(--bad); }
+
+.hint { margin:10px 0 0; font-size:12px; color:var(--muted); }
+
+.state { border-top:0; }
+.state-row { display:flex; justify-content:space-between; align-items:center; gap:12px;
+  padding:9px 2px; border-bottom:1px solid var(--rule); font-size:13px; }
+.state-row:last-child { border-bottom:0; }
+.state-row span:first-child { font-size:11px; font-weight:600; letter-spacing:.1em;
   text-transform:uppercase; color:var(--muted); }
+#state { font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  font-size:12px; }
 #state.running { color:var(--blue); }
 #state.ok { color:var(--ok); }
 #state.bad { color:var(--bad); }
 
-.ledger-head { display:flex; align-items:baseline; justify-content:space-between; }
-.live { display:none; font-size:10px; letter-spacing:.14em;
-        text-transform:uppercase; color:var(--paper); background:var(--blue);
-        padding:2px 6px; }
-.live.on { display:inline-block; }
-#log { max-height:300px; overflow:auto; border:1px solid var(--rule); }
-.log-row { display:grid; grid-template-columns:62px 150px minmax(0,1fr);
-           gap:10px; padding:5px 10px; border-bottom:1px solid var(--rule);
-           font-size:12px; animation:in 160ms ease-out; }
+.ledger-head { display:flex; align-items:center; justify-content:space-between;
+  gap:12px; margin-bottom:12px; }
+.ledger-head .eyebrow { margin:0; }
+.live { display:none; align-items:center; gap:6px; font-size:10px; font-weight:700;
+  letter-spacing:.12em; text-transform:uppercase; color:var(--ok);
+  background:var(--ok-soft); border:1px solid color-mix(in srgb, var(--ok) 35%, transparent);
+  padding:3px 10px; border-radius:999px; }
+.live.on { display:inline-flex; }
+.live::before { content:""; width:6px; height:6px; border-radius:50%;
+  background:var(--ok); animation:blink 1.4s infinite; }
+@keyframes blink { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+
+#log { max-height:300px; overflow:auto; border:1px solid var(--rule);
+  border-radius:10px; background:var(--paper); }
+.log-row { display:grid; grid-template-columns:60px 150px minmax(0,1fr); gap:10px;
+  padding:6px 12px; border-bottom:1px solid var(--rule);
+  font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  font-size:11.5px; animation:in 160ms ease-out; }
 .log-row:last-child { border-bottom:0; }
 .log-row .t { color:var(--muted); }
-.log-row .e { font-weight:600; }
+.log-row .e { font-weight:650; }
 .log-row .d { color:var(--muted); overflow:hidden; text-overflow:ellipsis;
-              white-space:nowrap; }
+  white-space:nowrap; }
 .log-row.tool .e { color:var(--blue); }
 .log-row.ok .e { color:var(--ok); }
 .log-row.bad .e { color:var(--bad); }
-.empty { padding:14px 10px; color:var(--muted); font-size:12px; }
-@keyframes in { from { opacity:0; transform:translateY(2px); } }
+@keyframes in { from { opacity:0; transform:translateY(3px); } }
+.empty { padding:12px 10px; color:var(--muted); font-size:12px; }
 
-table { width:100%; border-collapse:collapse; font-size:12px; }
-th { text-align:left; padding:6px 10px; border-bottom:1px solid var(--ink);
-     font-size:10px; font-weight:400; letter-spacing:.14em;
-     text-transform:uppercase; color:var(--muted); }
-td { padding:7px 10px; border-bottom:1px solid var(--rule); vertical-align:top; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; padding:7px 8px; border-bottom:1px solid var(--rule);
+  font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  font-size:10px; font-weight:600; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--muted); }
+td { padding:8px 8px; border-bottom:1px solid var(--rule); vertical-align:top; }
+tr:last-child td { border-bottom:0; }
 tr[data-job] { cursor:pointer; }
-tr[data-job]:hover td { background:var(--paper-2); }
-tr[data-job].selected td { background:var(--paper-2);
+tr[data-job]:hover td { background:var(--blue-soft); }
+tr[data-job].selected td { background:var(--blue-soft);
   box-shadow:inset 3px 0 0 var(--blue); }
-.tag { display:inline-block; border:1px solid var(--rule); padding:1px 6px;
-       font-size:10px; letter-spacing:.1em; }
-.tag.ok { border-color:var(--ok); color:var(--ok); }
-.tag.bad { border-color:var(--bad); color:var(--bad); }
-pre { margin:0; max-height:300px; overflow:auto; background:var(--paper-2);
-      border:1px solid var(--rule); padding:12px; font-size:11px;
-      line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+.job-repo { max-width:150px; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; color:var(--muted); font-size:11.5px; }
+.tag { display:inline-block; border:1px solid var(--rule); padding:2px 8px;
+  border-radius:999px; font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  font-size:10px; font-weight:600; letter-spacing:.1em; }
+.tag.ok { border-color:color-mix(in srgb, var(--ok) 50%, transparent);
+  color:var(--ok); background:var(--ok-soft); }
+.tag.bad { border-color:color-mix(in srgb, var(--bad) 50%, transparent);
+  color:var(--bad); background:var(--bad-soft); }
+.del { width:26px; height:26px; padding:0; border-radius:8px; border:1px solid transparent;
+  background:transparent; color:var(--muted); font-size:14px; line-height:1;
+  flex:none; }
+.del:hover { color:var(--bad); border-color:color-mix(in srgb, var(--bad) 45%, transparent);
+  background:var(--bad-soft); }
 
-#map-detail { border:1px solid var(--rule); background:var(--paper-2);
-  padding:12px; font-size:12px; margin-bottom:10px; }
-#map-detail .impact-list { margin:6px 0 0; padding-left:20px; }
-#map-detail ol.impact-list li { padding:1px 0; }
-.map-wrap { overflow:auto; max-height:520px; border:1px solid var(--rule); }
-#map { display:block; width:100%; height:auto; background:var(--paper-2); }
-#map .edge { stroke:var(--rule); stroke-width:1.5; opacity:.6; }
-#map .edge.e-call, #map .edge.e-both { stroke:var(--blue); stroke-dasharray:4 3; }
+pre { margin:0; max-height:300px; overflow:auto; background:var(--paper);
+  border:1px solid var(--rule); border-radius:10px; padding:14px; font-size:12px;
+  font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+
+#map-detail { border:1px solid var(--rule); background:var(--paper);
+  border-radius:10px; padding:12px 14px; font-size:12.5px; margin-bottom:12px;
+  color:var(--ink); }
+#map-detail strong { font-weight:650; }
+#map-detail .impact-list { margin:8px 0 0; padding-left:20px; }
+#map-detail ol.impact-list li { padding:2px 0; }
+#map-detail button { width:auto; margin-top:12px; padding:7px 16px; font-size:11px; }
+.map-wrap { overflow:auto; max-height:520px; border:1px solid var(--rule);
+  border-radius:10px; background:var(--paper); }
+#map { display:block; width:100%; height:auto; background:var(--paper); }
+#map .edge { stroke:var(--rule); stroke-width:1.6; opacity:.65; }
+#map .edge.e-call, #map .edge.e-both { stroke:var(--blue); stroke-dasharray:4 3; opacity:.75; }
 #map .edge.map-edge-on { stroke:var(--ink); opacity:1; }
 #map .edge.impact { stroke:var(--bad); opacity:1; }
 #map .node { cursor:pointer; }
-#map .node rect { fill:var(--paper); stroke:var(--rule); stroke-width:1;
+#map .node rect { fill:var(--paper-2); stroke:var(--rule); stroke-width:1; rx:9;
   transition:fill .12s, stroke .12s; }
-#map .node text { fill:var(--muted); font-size:10px;
-  font-family:ui-monospace,"Cascadia Mono",Consolas,monospace; }
-#map .node.map-hover rect { stroke:var(--blue); stroke-width:2; fill:var(--paper-2); }
+#map .node text { fill:var(--muted); font-size:10.5px;
+  font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace; }
+#map .node.map-hover rect { stroke:var(--blue); stroke-width:2; fill:var(--blue-soft); }
 #map .node.map-hover text, #map .node.map-neighbor text { fill:var(--ink); }
 #map .node.map-neighbor rect { stroke:var(--blue); }
-#map .node.impact rect { fill:var(--bad); fill-opacity:.18; stroke:var(--bad);
+#map .node.impact rect { fill:var(--bad); fill-opacity:.16; stroke:var(--bad);
   animation:impactPulse 700ms ease-out; }
 @keyframes impactPulse {
-  0% { fill:var(--bad); fill-opacity:.55; stroke-width:3; }
-  100% { fill:var(--bad); fill-opacity:.18; }
+  0% { fill:var(--bad); fill-opacity:.5; stroke-width:3; }
+  100% { fill:var(--bad); fill-opacity:.16; }
 }
+#map .cluster-label { fill:var(--muted); font-size:10px; font-weight:650;
+  letter-spacing:.14em; text-transform:uppercase;
+  font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace; }
+
+/* ---- folder tree ---- */
+#tree { max-height:560px; overflow:auto; border:1px solid var(--rule);
+  border-radius:10px; background:var(--paper); padding:8px 6px; }
+.tree-root, .tree-root ul { list-style:none; margin:0; padding:0; }
+.tree-root ul { padding-left:16px; }
+.tree-item { font-size:12px; border-radius:6px; }
+.tree-item .tree-row { display:flex; align-items:center; gap:6px; padding:3px 6px;
+  border-radius:6px; cursor:pointer; }
+.tree-item .tree-row:hover { background:var(--blue-soft); }
+.tree-toggle { width:16px; height:16px; padding:0; border:none; background:transparent;
+  color:var(--muted); font-size:10px; line-height:1; flex:none; display:flex;
+  align-items:center; justify-content:center; }
+.tree-toggle:hover { color:var(--ink); background:transparent; }
+.tree-icon { flex:none; width:14px; text-align:center; color:var(--muted); font-size:11px; }
+.tree-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace; font-size:11.5px; }
+.tree-name.dir { font-weight:600; }
+.tree-item .tree-children { display:none; }
+.tree-item.open > .tree-children { display:block; }
+.tree-item.open > .tree-row .tree-toggle { transform:rotate(90deg); }
 
 footer { border-top:1px solid var(--rule); }
 .foot { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;
-        max-width:1240px; margin:0 auto; padding:12px 32px;
-        font-size:10px; letter-spacing:.1em; text-transform:uppercase;
-        color:var(--muted); }
+  max-width:1400px; margin:0 auto; padding:14px 32px; font-size:11px;
+  font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
+
+/* ---- ask (chat) cell ---- */
+.ask { display:flex; flex-direction:column; }
+.ask-head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.ask-head .eyebrow { margin:0; }
+.ask-job { font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  font-size:10.5px; color:var(--muted); padding:3px 10px; border:1px solid var(--rule);
+  border-radius:999px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  max-width:220px; }
+.ask-log { flex:1; overflow:auto; border:1px solid var(--rule); border-radius:12px;
+  background:var(--paper); margin:12px 0; padding:12px; display:flex;
+  flex-direction:column; gap:8px; min-height:260px; }
+.bubble { padding:9px 12px; border:1px solid var(--rule); border-radius:12px;
+  background:var(--paper-2); font-size:12.5px; white-space:pre-wrap;
+  align-self:flex-start; max-width:85%; }
+.bubble.user { background:var(--blue); border-color:var(--blue); color:#fff;
+  align-self:flex-end; border-bottom-right-radius:4px; }
+.bubble.bad { border-color:color-mix(in srgb, var(--bad) 55%, transparent);
+  color:var(--bad); background:var(--bad-soft); }
+.tool-line { font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+  font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tool-line.ok::before { content:"\2699\00a0"; color:var(--ok); }
+.tool-line.bad::before { content:"\2715\00a0"; color:var(--bad); }
+#ask-q { margin-bottom:10px; }
+#ask-send { width:auto; padding:11px 26px; }
+
 @media (prefers-reduced-motion: reduce) {
   .lamp.running { animation:none; }
   .log-row { animation:none; }
   .ask { transition:none; }
+  .live::before { animation:none; }
   #map .node.impact rect { animation:none; }
 }
 </style>
@@ -207,63 +320,83 @@ footer { border-top:1px solid var(--rule); }
       <span class="crosshair" aria-hidden="true"></span>
       <h1>CLIO<span class="sub">analysis dashboard</span></h1>
     </div>
-    <div class="sys"><span class="lamp" id="lamp" aria-hidden="true"></span>
+    <div class="sys">
+      <span class="provider-pill"><span class="lamp" id="lamp" aria-hidden="true"></span>
+        <span id="provider">__PROVIDER__</span></span>
       <button id="theme-btn" type="button" class="theme-btn" aria-label="Toggle dark mode">Theme</button>
       <button id="ask-open" type="button" class="theme-btn">Ask &#9656;</button>
-      mock provider · offline · zero dependencies</div>
+    </div>
   </div>
 </header>
-<main>
-  <section aria-labelledby="run-label">
-    <h2 class="eyebrow" id="run-label">Run analysis</h2>
+<main class="bento">
+  <section class="cell hero" aria-labelledby="run-label">
+    <h2 class="eyebrow" id="run-label">New analysis</h2>
     <form id="run-form">
-      <label class="field-label" for="url">Repository</label>
+      <label class="field-label" for="url">Repository URL</label>
       <input type="text" id="url" spellcheck="false"
              placeholder="https://github.com/user/repo.git"
              value="https://github.com/omhome16/Clio.git">
-      <button id="go" type="submit">Run analysis →</button>
+      <button id="go" type="submit">Run analysis &#8594;</button>
     </form>
+    <p class="hint">Paste any git URL, or reopen a past thread from the history panel.</p>
+  </section>
+  <section class="cell status" aria-label="System status">
+    <h2 class="eyebrow">System</h2>
     <div class="state">
       <div class="state-row"><span>State</span><span id="state">idle</span></div>
       <div class="state-row"><span>Jobs</span><span id="job-count">0</span></div>
     </div>
   </section>
-  <section aria-labelledby="ledger-label">
+  <section class="cell history" aria-label="Thread history">
+    <h2 class="eyebrow">Threads <span class="spacer"></span>
+      <button id="clear-jobs" type="button" class="danger-btn">Clear all</button></h2>
+    <table>
+      <thead><tr><th>Repo</th><th>Status</th><th>Summary</th><th></th></tr></thead>
+      <tbody id="jobs"></tbody>
+    </table>
+  </section>
+  <aside class="cell ask" id="ask-panel" aria-label="Ask about this analysis">
+    <div class="ask-head">
+      <h2 class="eyebrow">Ask <span class="spacer"></span>
+        <span class="ask-job" id="ask-job">no thread selected</span></h2>
+      <button id="ask-close" type="button" class="theme-btn" aria-label="Close ask panel">&#10005;</button>
+    </div>
+    <div id="ask-log" class="ask-log" role="log" aria-live="polite">
+      <div class="empty">Select a thread in the history panel, then ask about it.</div>
+    </div>
+    <form id="ask-form">
+      <label class="field-label" for="ask-q">Question</label>
+      <input type="text" id="ask-q" spellcheck="false" placeholder="e.g. what calls app.service::greet?">
+      <button id="ask-send" type="submit">Ask &#8594;</button>
+    </form>
+  </aside>
+  <section class="cell ledger" aria-labelledby="ledger-label">
     <div class="ledger-head">
       <h2 class="eyebrow" id="ledger-label">Event ledger</h2>
       <span class="live" id="live-tag">Live</span>
     </div>
     <div id="log" role="log" aria-live="polite"></div>
-    <h2 class="eyebrow" style="margin-top:24px">Job history</h2>
-    <table>
-      <thead><tr><th>Job</th><th>Status</th><th>Summary</th></tr></thead>
-      <tbody id="jobs"></tbody>
-    </table>
-    <h2 class="eyebrow" style="margin-top:24px">Report</h2>
-    <pre id="report">Select a job from the history table.</pre>
-    <h2 class="eyebrow" style="margin-top:24px">Module map</h2>
-    <div id="map-detail" class="empty">Select a job, then click a module to inspect it.</div>
+  </section>
+  <section class="cell map">
+    <h2 class="eyebrow">Module map</h2>
+    <div id="map-detail" class="empty">Select a thread, then click a module to inspect it.</div>
     <div class="map-wrap"><svg id="map" role="img" aria-label="Module architecture map"></svg></div>
   </section>
+  <section class="cell tree">
+    <h2 class="eyebrow">Folder tree</h2>
+    <div id="tree" role="tree">
+      <div class="empty">Select a thread to see its repository tree.</div>
+    </div>
+  </section>
+  <section class="cell report">
+    <h2 class="eyebrow">Report</h2>
+    <pre id="report">Select a thread from the history panel.</pre>
+  </section>
 </main>
-<aside id="ask-panel" class="ask" aria-label="Ask about this analysis">
-  <div class="ask-head">
-    <h2 class="eyebrow" style="margin:0">Ask</h2>
-    <button id="ask-close" type="button" class="theme-btn" aria-label="Close ask panel">&#10005;</button>
-  </div>
-  <div id="ask-log" class="ask-log" role="log" aria-live="polite">
-    <div class="empty">Select a job in the history table, then ask about it.</div>
-  </div>
-  <form id="ask-form">
-    <label class="field-label" for="ask-q">Question</label>
-    <input type="text" id="ask-q" spellcheck="false" placeholder="e.g. what calls app.service::greet?">
-    <button id="ask-send" type="submit">Ask &#8594;</button>
-  </form>
-</aside>
 <footer>
   <div class="foot">
     <span>Clio — local analysis harness · events stream over SSE</span>
-    <span>mock provider (no API key)</span>
+    <span>provider: __PROVIDER__</span>
   </div>
 </footer>
 <script>
@@ -291,10 +424,12 @@ const askLog = document.getElementById("ask-log");
 const askForm = document.getElementById("ask-form");
 const askQ = document.getElementById("ask-q");
 const askSend = document.getElementById("ask-send");
+const askJobEl = document.getElementById("ask-job");
 let activeJob = null;
 
 document.getElementById("ask-open").addEventListener("click", () => {
   askPanel.classList.add("open");
+  if (window.innerWidth > 920) askPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   askQ.focus();
 });
 document.getElementById("ask-close").addEventListener("click", () => {
@@ -383,6 +518,51 @@ function logLine(text, cls) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+function clearViews() {
+  document.getElementById("report").textContent = "Select a thread from the history panel.";
+  document.getElementById("map").textContent = "";
+  document.getElementById("map-detail").className = "empty";
+  document.getElementById("map-detail").textContent = "Select a thread, then click a module to inspect it.";
+  document.getElementById("tree").textContent = "";
+  document.getElementById("tree").appendChild(Object.assign(document.createElement("div"), {
+    className: "empty", textContent: "Select a thread to see its repository tree.",
+  }));
+  askLog.textContent = "";
+  askLog.appendChild(Object.assign(document.createElement("div"), {
+    className: "empty", textContent: "Select a thread in the history panel, then ask about it.",
+  }));
+  askJobEl.textContent = "no thread selected";
+  activeJob = null;
+  document.querySelectorAll("tr.selected").forEach((r) => r.classList.remove("selected"));
+}
+
+async function deleteJob(jobId) {
+  const resp = await fetch("/api/jobs/" + encodeURIComponent(jobId), { method: "DELETE" });
+  if (!resp.ok) {
+    logLine("delete failed for " + jobId + ": " + (await resp.json()).error, "bad");
+    return;
+  }
+  logLine("deleted thread " + jobId, "ok");
+  if (activeJob === jobId) clearViews();
+  refreshJobs();
+}
+
+async function clearJobs() {
+  const resp = await fetch("/api/jobs", { method: "DELETE" });
+  if (!resp.ok) {
+    logLine("clear failed: " + (await resp.json()).error, "bad");
+    return;
+  }
+  logLine("cleared " + (await resp.json()).deleted + " threads", "ok");
+  clearViews();
+  refreshJobs();
+}
+
+document.getElementById("clear-jobs").addEventListener("click", () => {
+  if (!confirm("Delete ALL threads and their reports?")) return;
+  clearJobs();
+});
+
 async function analyze() {
   go.disabled = true;
   logEl.textContent = "";
@@ -434,17 +614,20 @@ async function refreshJobs() {
   if (!body.jobs.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 3;
+    td.colSpan = 4;
     td.className = "empty";
-    td.textContent = "No jobs yet — run an analysis.";
+    td.textContent = "No threads yet — run an analysis.";
     tr.appendChild(td);
     tbody.appendChild(tr);
   }
   for (const job of body.jobs) {
     const tr = document.createElement("tr");
     tr.dataset.job = job.job_id;
-    const id = document.createElement("td");
-    id.textContent = job.job_id;
+    const repo = document.createElement("td");
+    const repoLabel = document.createElement("div");
+    repoLabel.className = "job-repo";
+    repoLabel.textContent = job.url || job.job_id;
+    repo.appendChild(repoLabel);
     const st = document.createElement("td");
     const tag = document.createElement("span");
     tag.className = "tag" + (job.status === "PERSISTED" ? " ok"
@@ -453,7 +636,20 @@ async function refreshJobs() {
     st.appendChild(tag);
     const sm = document.createElement("td");
     sm.textContent = job.summary || "";
-    tr.append(id, st, sm);
+    const del = document.createElement("td");
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "del";
+    delBtn.title = "Delete thread";
+    delBtn.setAttribute("aria-label", "Delete thread " + job.job_id);
+    delBtn.textContent = "\u00d7";
+    delBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (!confirm("Delete thread " + job.job_id + "?")) return;
+      deleteJob(job.job_id);
+    });
+    del.appendChild(delBtn);
+    tr.append(repo, st, sm, del);
     tr.addEventListener("click", () => showJob(job.job_id, tr));
     tbody.appendChild(tr);
   }
@@ -462,6 +658,7 @@ async function refreshJobs() {
 
 async function showJob(jobId, tr) {
   activeJob = jobId;
+  askJobEl.textContent = jobId;
   const pre = document.getElementById("report");
   document.querySelectorAll("tr.selected").forEach((r) => r.classList.remove("selected"));
   if (tr) tr.classList.add("selected");
@@ -470,6 +667,7 @@ async function showJob(jobId, tr) {
     ? JSON.stringify(await resp.json(), null, 2)
     : "No report for " + jobId + ".";
   loadMap(jobId);
+  loadTree(jobId);
 }
 
 const NS = "http://www.w3.org/2000/svg";
@@ -480,7 +678,7 @@ async function loadMap(jobId) {
   const svg = document.getElementById("map");
   const detail = document.getElementById("map-detail");
   detail.className = "empty";
-  detail.textContent = "Loading map…";
+  detail.textContent = "Loading map\u2026";
   const resp = await fetch("/api/jobs/" + jobId + "/graph/map");
   if (!resp.ok || mapJob !== jobId) {
     svg.textContent = "";
@@ -491,7 +689,7 @@ async function loadMap(jobId) {
   renderMap(svg, payload);
   detail.className = "empty";
   detail.textContent = payload.nodes.length + " modules, " + payload.edges.length +
-    " edges — hover to trace, click a module for detail.";
+    " edges \u2014 hover to trace, click a module for detail.";
 }
 
 function renderMap(svg, payload) {
@@ -503,10 +701,27 @@ function renderMap(svg, payload) {
     (neighbors[e.from] = neighbors[e.from] || []).push(e.to);
     (neighbors[e.to] = neighbors[e.to] || []).push(e.from);
   });
+  const byCluster = {};
+  nodes.forEach((n) => (byCluster[n.cluster] = byCluster[n.cluster] || []).push(n));
   const w = Math.max(0, ...nodes.map((n) => n.x)) + 280;
   const h = Math.max(0, ...nodes.map((n) => n.y)) + 160;
   svg.setAttribute("viewBox", "0 0 " + w + " " + h);
   svg.textContent = "";
+  const defs = document.createElementNS(NS, "defs");
+  const marker = document.createElementNS(NS, "marker");
+  marker.setAttribute("id", "arrow");
+  marker.setAttribute("viewBox", "0 0 8 8");
+  marker.setAttribute("refX", "7");
+  marker.setAttribute("refY", "4");
+  marker.setAttribute("markerWidth", "6");
+  marker.setAttribute("markerHeight", "6");
+  marker.setAttribute("orient", "auto-start-reverse");
+  const poly = document.createElementNS(NS, "path");
+  poly.setAttribute("d", "M0,0 L8,4 L0,8 z");
+  poly.setAttribute("fill", "var(--rule)");
+  marker.appendChild(poly);
+  defs.appendChild(marker);
+  svg.appendChild(defs);
   edges.forEach((e) => {
     const a = byId[e.from], b = byId[e.to];
     if (!a || !b) return;
@@ -541,6 +756,17 @@ function renderMap(svg, payload) {
     g.addEventListener("mouseleave", () => highlightMap(n.id, neighbors, svg, false));
     g.addEventListener("click", () => showModuleDetail(n, neighbors));
     svg.appendChild(g);
+  });
+  Object.keys(byCluster).sort().forEach((cluster) => {
+    const ys = byCluster[cluster].map((n) => n.y);
+    const x = byCluster[cluster][0].x;
+    const label = document.createElementNS(NS, "text");
+    label.setAttribute("x", x + 130);
+    label.setAttribute("y", Math.min.apply(null, ys) - 30);
+    label.setAttribute("text-anchor", "middle");
+    label.classList.add("cluster-label");
+    label.textContent = cluster;
+    svg.appendChild(label);
   });
 }
 
@@ -613,11 +839,77 @@ async function showImpact(module) {
   detail.append(head, list);
 }
 
+async function loadTree(jobId) {
+  const box = document.getElementById("tree");
+  box.textContent = "";
+  const resp = await fetch("/api/jobs/" + encodeURIComponent(jobId) + "/tree");
+  if (!resp.ok) {
+    box.appendChild(Object.assign(document.createElement("div"), {
+      className: "empty", textContent: "No workspace for this thread.",
+    }));
+    return;
+  }
+  const payload = await resp.json();
+  if (!payload.count) {
+    box.appendChild(Object.assign(document.createElement("div"), {
+      className: "empty", textContent: "This thread has no files.",
+    }));
+    return;
+  }
+  const root = { name: "", dir: true, children: {} };
+  payload.files.forEach((path) => {
+    const parts = path.split("/");
+    let node = root;
+    parts.forEach((part, i) => {
+      const isFile = i === parts.length - 1;
+      if (!node.children[part]) {
+        node.children[part] = { name: part, dir: !isFile, children: {} };
+      }
+      node = node.children[part];
+    });
+  });
+  function render(node, container, depth) {
+    Object.keys(node.children).sort().forEach((name) => {
+      const child = node.children[name];
+      const li = document.createElement("li");
+      li.className = "tree-item";
+      const row = document.createElement("div");
+      row.className = "tree-row";
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "tree-toggle";
+      toggle.setAttribute("aria-label", "Toggle " + name);
+      toggle.textContent = "\u25b8";
+      const icon = document.createElement("span");
+      icon.className = "tree-icon";
+      icon.textContent = child.dir ? "📁" : "📄";
+      const label = document.createElement("span");
+      label.className = "tree-name" + (child.dir ? " dir" : "");
+      label.textContent = name;
+      row.append(toggle, icon, label);
+      li.appendChild(row);
+      if (child.dir) {
+        const ul = document.createElement("ul");
+        ul.className = "tree-children";
+        li.appendChild(ul);
+        if (depth < 1) li.classList.add("open");
+        toggle.addEventListener("click", () => li.classList.toggle("open"));
+        row.addEventListener("click", () => li.classList.toggle("open"));
+        render(child, ul, depth + 1);
+      } else {
+        toggle.style.visibility = "hidden";
+      }
+      container.appendChild(li);
+    });
+  }
+  render(root, box, 0);
+}
+
 document.getElementById("run-form").addEventListener("submit", (e) => {
   e.preventDefault();
   analyze();
 });
-logLine("No activity yet — run an analysis to fill the ledger.", "");
+logLine("No activity yet \u2014 run an analysis to fill the ledger.", "");
 refreshJobs();
 </script>
 </body>
@@ -637,7 +929,43 @@ class Dashboard:
         self._ask_sessions: dict[str, AskSession] = {}
         self._httpd: ThreadingHTTPServer | None = None
 
+    def is_running(self, job_id: str) -> bool:
+        with self._lock:
+            return job_id in self._jobs and not self._done.get(job_id, True)
+
+    def delete_job(self, job_id: str) -> bool:
+        """Remove every artifact of a job (records, report, graph, workspace)."""
+        deleted = False
+        for path in (jobs_dir(self.root) / f"{job_id}.json",
+                     jobs_dir(self.root) / f"{job_id}.report.json",
+                     jobs_dir(self.root) / f"{job_id}.graph.db"):
+            if path.is_file():
+                try:
+                    path.unlink()
+                    deleted = True
+                except OSError:
+                    pass
+        workspace = self.root / job_id
+        if workspace.is_dir():
+            shutil.rmtree(workspace, ignore_errors=True)
+            deleted = True
+        with self._lock:
+            self._jobs.pop(job_id, None)
+            self._done.pop(job_id, None)
+            self._ask_queues.pop(job_id, None)
+            self._ask_done.pop(job_id, None)
+            self._ask_sessions.pop(job_id, None)
+        return deleted
+
+    def clear_jobs(self) -> int:
+        """Delete every job on disk; returns how many were removed."""
+        ids: set[str] = set()
+        for pattern in ("*.json", "*.report.json", "*.graph.db"):
+            ids.update(p.stem for p in jobs_dir(self.root).glob(pattern))
+        return sum(1 for job_id in sorted(ids) if self.delete_job(job_id))
+
     def start(self) -> str:
+        setup_logging()
         self._httpd = ThreadingHTTPServer(("127.0.0.1", self.port), _Handler)
         self._httpd.dashboard = self
         thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
@@ -669,15 +997,17 @@ class Dashboard:
             self._jobs[job_id].append(event)
 
     def run_job(self, url: str, job_id: str) -> None:
+        logger = logging.getLogger("clio.web")
         limits = get_limits()
         sandbox = Sandbox(root=self.root, limits=limits)
         bus = EventBus()
         bus.subscribe(lambda e: self._publish(job_id, e))
-        client = make_client(get_provider(), limits)
-        orchestrator = Orchestrator(sandbox, client, bus=bus, limits=limits)
         try:
+            client = make_client(get_provider(), limits)
+            orchestrator = Orchestrator(sandbox, client, bus=bus, limits=limits)
             asyncio.run(orchestrator.run(url, root=sandbox.root, job_id=job_id))
         except Exception as exc:
+            logger.exception("job %s failed: %s", job_id, exc)
             self._publish(
                 job_id, Event(type="job.failed", job_id=job_id, data={"error": str(exc)})
             )
@@ -714,6 +1044,7 @@ class Dashboard:
             return pending, self._ask_done.get(job_id, False)
 
     def run_ask(self, job_id: str, question: str) -> None:
+        logger = logging.getLogger("clio.web")
         session = self.ask_session(job_id)
         bus = EventBus()
 
@@ -725,6 +1056,7 @@ class Dashboard:
         try:
             asyncio.run(session.run_turn(question, bus=bus))
         except Exception as exc:
+            logger.exception("ask on job %s failed: %s", job_id, exc)
             self._publish_ask(job_id, {
                 "type": EVENT_ASK_FINAL,
                 "data": {"answer": f"error: {exc}", "ok": False},
@@ -761,7 +1093,7 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if path == "/":
-            self._send_html(INDEX_HTML)
+            self._send_html(INDEX_HTML.replace("__PROVIDER__", get_provider()))
             return
         if path == "/api/jobs":
             archive = ReportArchive(self.server.dashboard.root)
@@ -770,6 +1102,7 @@ class _Handler(BaseHTTPRequestHandler):
                 row = dict(report)
                 job = load_job(row["job_id"], self.server.dashboard.root)
                 row["status"] = job.status if job is not None else "PERSISTED"
+                row["url"] = job.url if job is not None else row.get("url", "")
                 jobs.append(row)
             self._send_json(200, {"jobs": jobs})
             return
@@ -779,6 +1112,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._job_map(rest[: -len("/graph/map")], parsed.query)
             elif rest.endswith("/graph"):
                 self._job_graph(rest[: -len("/graph")])
+            elif rest.endswith("/tree"):
+                self._job_tree(rest[: -len("/tree")])
             else:
                 self._job_report(rest)
             return
@@ -805,6 +1140,29 @@ class _Handler(BaseHTTPRequestHandler):
             )
             thread.start()
             self._send_json(200, {"job_id": job_id})
+            return
+        self._json_error(404, "not found")
+
+    def do_DELETE(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        dash = self.server.dashboard
+        if parsed.path == "/api/jobs":
+            running = [jid for jid in dash._jobs if dash.is_running(jid)]
+            if running:
+                self._json_error(409, f"job {running[0]} is still running")
+                return
+            count = dash.clear_jobs()
+            self._send_json(200, {"deleted": count})
+            return
+        if parsed.path.startswith("/api/jobs/"):
+            job_id = parsed.path[len("/api/jobs/"):]
+            if dash.is_running(job_id):
+                self._json_error(409, f"job {job_id} is still running")
+                return
+            if not dash.delete_job(job_id):
+                self._json_error(404, f"no job {job_id}")
+                return
+            self._send_json(200, {"deleted": job_id})
             return
         self._json_error(404, "not found")
 
@@ -840,6 +1198,34 @@ class _Handler(BaseHTTPRequestHandler):
             payload["impact"] = impact_of_module(archive, job_id, module).to_dict()
         self._send_json(200, payload)
 
+    def _job_tree(self, job_id: str) -> None:
+        dash = self.server.dashboard
+        job = load_job(job_id, dash.root)
+        workspace = job.workspace if job is not None and job.workspace else dash.root / job_id
+        if not workspace.is_dir():
+            self._json_error(404, f"no workspace for {job_id}")
+            return
+        limits = get_limits()
+        files: list[str] = []
+        truncated = False
+        cap = 2000
+
+        def walk(dirpath: Path) -> None:
+            nonlocal truncated
+            for child in sorted(dirpath.iterdir(), key=lambda p: (p.is_dir(), p.name.lower())):
+                if child.is_dir():
+                    if child.name in limits.exclude_dirs:
+                        continue
+                    walk(child)
+                else:
+                    files.append(child.relative_to(workspace).as_posix())
+                    if len(files) >= cap:
+                        truncated = True
+                        return
+
+        walk(workspace)
+        self._send_json(200, {"files": files, "count": len(files), "truncated": truncated})
+
     def _stream(self, job_id: str) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -857,6 +1243,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 break
             time.sleep(0.1)
+
 
     def _ask(self, job_id: str, question: str) -> None:
         dash = self.server.dashboard
@@ -886,3 +1273,27 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 break
             time.sleep(0.1)
+
+
+def _main(argv: list[str] | None = None) -> int:
+    """Run the dashboard from the terminal: ``python -m clio.web``."""
+    parser = argparse.ArgumentParser(prog="clio-web", description="Clio analysis dashboard")
+    parser.add_argument("--root", default="sandbox", help="workspace root (jobs live under root/jobs)")
+    parser.add_argument("--port", type=int, default=8790, help="port to serve on")
+    args = parser.parse_args(argv)
+    setup_logging(file="clio.log")
+    dashboard = Dashboard(Path(args.root), port=args.port)
+    url = dashboard.start()
+    logging.getLogger("clio").info(
+        "dashboard ready at %s (provider: %s)", url, get_provider()
+    )
+    print(url)
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        dashboard.stop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

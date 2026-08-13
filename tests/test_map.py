@@ -89,3 +89,12 @@ def test_resolve_module_aliases():
     assert resolve_module("clio.config", modules) == "src.clio.config"
     assert resolve_module("os", modules) is None
     assert resolve_module("pkg.one.a", modules) == "pkg.one"
+
+
+def test_resolve_module_strips_symbol_suffix():
+    modules = ["src.clio.config", "src.clio.llm", "pkg", "pkg.one", "pkg.two"]
+    assert resolve_module("clio.config.Limits", modules) == "src.clio.config"
+    assert resolve_module("clio.config.get_limits", modules) == "src.clio.config"
+    assert resolve_module("clio.llm.GeminiClient", modules) == "src.clio.llm"
+    assert resolve_module("urllib.parse.urlparse", modules) is None
+    assert resolve_module("argparse", modules) is None

@@ -24,21 +24,27 @@ def resolve_module(target: str, modules: list[str]) -> str | None:
     Exact module wins. Otherwise the longest module the target is nested under
     (target "pkg.two.b" -> module "pkg.two"), else the shallowest module the target
     is an ancestor of (target "clio" -> module "clio.x"; alias "clio.config" ->
-    "src.clio.config" via the .endswith rule). Returns None when nothing matches.
+    "src.clio.config" via the .endswith rule). Import targets carry symbol
+    suffixes ("clio.config.Limits"), so unresolved targets retry with trailing
+    dotted segments stripped ("clio.config.Limits" -> "clio.config"). Returns
+    None when nothing matches.
     """
-    exact = target if target in modules else None
-    if exact is not None:
-        return exact
-    deeper = [m for m in modules if target.startswith(m + ".")]
-    if deeper:
-        return max(deeper, key=len)
-    under = [
-        m for m in modules
-        if m.startswith(target + ".") or m.endswith("." + target)
-    ]
-    if under:
-        return min(under, key=len)
-    return None
+    while True:
+        exact = target if target in modules else None
+        if exact is not None:
+            return exact
+        deeper = [m for m in modules if target.startswith(m + ".")]
+        if deeper:
+            return max(deeper, key=len)
+        under = [
+            m for m in modules
+            if m.startswith(target + ".") or m.endswith("." + target)
+        ]
+        if under:
+            return min(under, key=len)
+        if "." not in target:
+            return None
+        target = target.rsplit(".", 1)[0]
 
 
 def layout_graph(graph: RepoGraph) -> dict:

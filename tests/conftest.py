@@ -10,6 +10,20 @@ from clio.graph import build_repo_graph
 from clio.store import GraphStore
 
 
+@pytest.fixture(autouse=True)
+def _isolate_dotenv(monkeypatch, tmp_path):
+    """Tests must never read the developer's real .env from the repo root."""
+    monkeypatch.setenv("CLIO_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.delenv("CLIO_PROVIDER", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("CLIO_CHEAP_MODEL", raising=False)
+    monkeypatch.delenv("CLIO_FRONTIER_MODEL", raising=False)
+    monkeypatch.delenv("CLIO_RPM", raising=False)
+    monkeypatch.delenv("CLIO_MAX_RETRIES", raising=False)
+    monkeypatch.setenv("CLIO_RATE_LIMIT", "0")
+
+
 @pytest.fixture
 def write_tree(tmp_path: Path):
     """Write a dict of relative-path -> content files under tmp_path/repo."""
@@ -57,12 +71,22 @@ def local_repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def seed_job(write_tree):
-    """Seed a persisted job: graph.db + report.json for one job_id."""
+    """Seed a persisted job: workspace clone, job record, graph.db + report.json."""
     def _seed(root: Path, job_id: str, created_at: str, files: dict[str, str]) -> None:
-        graph = build_repo_graph(write_tree(files))
+        repo = write_tree(files)
+        graph = build_repo_graph(repo)
+        workspace = root / job_id
+        if workspace != repo:
+            shutil.copytree(repo, workspace)
         jobs = root / "jobs"
         jobs.mkdir(parents=True, exist_ok=True)
         GraphStore(jobs / f"{job_id}.graph.db").save(graph)
+        job = {
+            "job_id": job_id, "url": "https://github.com/x/y.git",
+            "status": "PERSISTED", "workspace": str(workspace),
+            "commit_sha": "", "created_at": created_at,
+        }
+        (jobs / f"{job_id}.json").write_text(json.dumps(job), encoding="utf-8")
         report = {
             "job_id": job_id, "repo_url": "https://github.com/x/y.git",
             "summary": "merged", "created_at": created_at,

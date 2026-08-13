@@ -35,6 +35,25 @@ def _post(url: str) -> tuple[int, str]:
         return exc.code, exc.read().decode("utf-8")
 
 
+def _delete(url: str) -> tuple[int, str]:
+    req = urllib.request.Request(url, method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8")
+
+
+def _inject_fake_llm(monkeypatch) -> None:
+    from clio.config import get_limits
+    from clio.llm import FakeLLM, fake_handler
+
+    monkeypatch.setattr(
+        "clio.web.make_client",
+        lambda provider, limits=None: FakeLLM(handler=fake_handler(get_limits())),
+    )
+
+
 def test_index_served(dashboard):
     _, url = dashboard
     status, body = _get(url + "/")
@@ -149,7 +168,44 @@ def test_api_unknown_route(dashboard):
     assert _get(url + "/api/nope")[0] == 404
 
 
-def test_analyze_and_stream(dashboard, local_repo):
+def test_api_job_tree(dashboard, seed_job):
+    dash, url = dashboard
+    seed_job(dash.root, "job-1", "2026-08-10T00:00:00+00:00", {
+        "pkg/__init__.py": "",
+        "pkg/one.py": "def a():\n    return 1\n",
+        "main.py": "import pkg.one\n",
+    })
+    status, body = _get(url + "/api/jobs/job-1/tree")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["count"] == 3
+    assert payload["files"] == ["main.py", "pkg/__init__.py", "pkg/one.py"]
+    assert _get(url + "/api/jobs/nope/tree")[0] == 404
+
+
+def test_api_delete_job_removes_artifacts(dashboard, seed_job):
+    dash, url = dashboard
+    seed_job(dash.root, "job-1", "2026-08-10T00:00:00+00:00", {"a.py": "def f():\n    return 1\n"})
+    assert _get(url + "/api/jobs/job-1")[0] == 200
+    status, body = _delete(url + "/api/jobs/job-1")
+    assert status == 200
+    assert json.loads(body)["deleted"] == "job-1"
+    assert _get(url + "/api/jobs/job-1")[0] == 404
+    assert _delete(url + "/api/jobs/job-1")[0] == 404
+
+
+def test_api_clear_jobs(dashboard, seed_job):
+    dash, url = dashboard
+    seed_job(dash.root, "job-1", "2026-08-10T00:00:00+00:00", {"a.py": ""})
+    seed_job(dash.root, "job-2", "2026-08-10T01:00:00+00:00", {"b.py": ""})
+    status, body = _delete(url + "/api/jobs")
+    assert status == 200
+    assert json.loads(body)["deleted"] == 2
+    assert json.loads(_get(url + "/api/jobs")[1])["jobs"] == []
+
+
+def test_analyze_and_stream(dashboard, local_repo, monkeypatch):
+    _inject_fake_llm(monkeypatch)
     dash, url = dashboard
     status, body = _post(url + "/api/analyze?url=" + urllib.parse.quote(local_repo.as_uri()))
     assert status == 200
@@ -168,7 +224,8 @@ def test_analyze_and_stream(dashboard, local_repo):
     assert report is not None and report["summary"] == "merged"
 
 
-def test_analyze_failed_job_streams_failure(dashboard):
+def test_analyze_failed_job_streams_failure(dashboard, monkeypatch):
+    _inject_fake_llm(monkeypatch)
     _, url = dashboard
     status, body = _post(url + "/api/analyze?url=" + urllib.parse.quote("file:///definitely/missing/repo"))
     assert status == 200
