@@ -13,7 +13,7 @@ from clio.events import (
     EVENT_JOB_FAILED, EVENT_JOB_GRAPHED, EVENT_JOB_INDEXING, EVENT_JOB_PERSISTED,
     EVENT_JOB_SYNTHESIZING, EVENT_SUBAGENT_DONE, Event, EventBus,
 )
-from clio.graph import build_repo_graph
+from clio.graph import RepoGraph, build_repo_graph
 from clio.job import AnalysisJob, jobs_dir, new_job, record_clone, update_status
 from clio.llm import LLMClient
 from clio.sandbox import Sandbox
@@ -23,51 +23,53 @@ from clio.subagent import Subagent, SubagentReport, SubagentSpec
 from clio.tools import ToolRegistry
 
 ASPECT_TASK = (
-    "Analyze the repository {repo} (commit {commit}) for the aspect: {aspect}.\n"
-    "Use the available tools to inspect the workspace. "
+    "Analyze the repository {repo} (commit {commit}) for the aspect: {aspect}.\n\n"
+    "{map}\n\n{pack}\n"
     "Reply with a final JSON object containing your findings."
 )
 
 
 def make_aspect_specs() -> tuple[SubagentSpec, ...]:
+    """Single-shot aspects. Structure and dependency relationships are derived
+    deterministically by the code graph (no LLM tokens spent); the LLM is
+    reserved for judgment: risks and the run flow / entry points."""
     return (
-        SubagentSpec(
-            name="structure",
-            role="files and layout",
-            system_prompt=(
-                "You map a repository's file layout: top-level organization, "
-                "package boundaries, and what each major directory contains."
-            ),
-            tools=("list_tree", "read_file"),
-        ),
-        SubagentSpec(
-            name="dependencies",
-            role="import and dependency relationships",
-            system_prompt=(
-                "You trace how modules depend on each other: imports, shared "
-                "components, and coupling hotspots."
-            ),
-            tools=("grep", "read_file", "list_tree"),
-        ),
         SubagentSpec(
             name="risks",
             role="quality risks and failure points",
             system_prompt=(
-                "You find quality risks: dead code, swallowed exceptions, "
-                "missing tests, hardcoded secrets, and fragile patterns."
+                "You are a code reviewer. From the evidence provided, find "
+                "quality risks: dead code, swallowed exceptions, missing tests, "
+                "hardcoded secrets, and fragile patterns. Reply with a JSON "
+                'object: {"risks": [{"severity": "high|medium|low", "file": "...", '
+                '"what": "...", "why": "..."}]}.'
             ),
-            tools=("grep", "read_file"),
+            tools=(),
         ),
         SubagentSpec(
             name="entrypoints",
             role="entry points and run flow",
             system_prompt=(
-                "You identify entry points (main functions, CLI, scripts, "
-                "servers) and trace the main execution flow."
+                "You are a software architect. From the evidence provided, "
+                "identify entry points (main functions, CLI, scripts, servers) "
+                "and trace the main execution flow. Reply with a JSON object: "
+                '{"entry_points": ["..."], "run_flow": "...", "modules": ["..."]}.'
             ),
-            tools=("list_tree", "read_file", "git_log"),
+            tools=(),
         ),
     )
+
+
+def build_aspect_packs(
+    workspace: Path, graph: RepoGraph, limits: Limits,
+) -> dict[str, str]:
+    """Deterministic per-aspect context packs (no LLM involved)."""
+    from clio.packing import pack_entrypoints, pack_risks
+
+    return {
+        "risks": pack_risks(workspace, graph, limits),
+        "entrypoints": pack_entrypoints(workspace, graph, limits),
+    }
 
 
 SYNTH_SPEC = SubagentSpec(
@@ -152,20 +154,33 @@ class Orchestrator:
 
             update_status(job, "ANALYZING", root)
             self._emit(EVENT_JOB_ANALYZING, job.job_id, {})
-            registry = ToolRegistry(self._sandbox, job.job_id, limits=self._limits)
+            workspace = self._sandbox.workspace(job.job_id)
+            from clio.repo_map import fitted_repo_map
+
+            repo_map = fitted_repo_map(graph, budget_chars=self._limits.repo_map_chars)
+            packs = build_aspect_packs(workspace, graph, self._limits)
             specs = make_aspect_specs()
             subs = {
                 spec.name: Subagent(
-                    spec, self._client, registry,
+                    spec, self._client, ToolRegistry(self._sandbox, job.job_id, limits=self._limits),
                     bus=self._bus, job_id=job.job_id,
-                    model=self._limits.cheap_model, max_steps=self._limits.max_agent_steps,
+                    model=self._limits.cheap_model, max_steps=1,
                 )
                 for spec in specs
             }
-            task = ASPECT_TASK.format(repo=url, commit=clone.commit_sha, aspect="{aspect}")
+            task = ASPECT_TASK.format(
+                repo=url, commit=clone.commit_sha,
+                aspect="{aspect}", map="{map}", pack="{pack}",
+            )
             outcomes = await fan_out(
                 list(specs),
-                lambda spec: subs[spec.name].run(task.format(aspect=spec.role)),
+                lambda spec: subs[spec.name].run(
+                    task.format(
+                        aspect=spec.role,
+                        map=repo_map,
+                        pack=packs[spec.name],
+                    )
+                ),
                 max_concurrency=self._limits.max_concurrency,
             )
             aspects: dict[str, dict] = {}
@@ -180,9 +195,9 @@ class Orchestrator:
             update_status(job, "SYNTHESIZING", root)
             self._emit(EVENT_JOB_SYNTHESIZING, job.job_id, {})
             synth = Subagent(
-                SYNTH_SPEC, self._client, registry,
+                SYNTH_SPEC, self._client, ToolRegistry(self._sandbox, job.job_id, limits=self._limits),
                 job_id=job.job_id,
-                model=self._limits.frontier_model, max_steps=self._limits.max_agent_steps,
+                model=self._limits.frontier_model, max_steps=1,
             )
             synth_report = await synth.run(
                 SYNTH_TASK.format(repo=url, findings=json.dumps(aspects, indent=2))
@@ -192,6 +207,10 @@ class Orchestrator:
                 summary = _synth.get("summary", synth_report.content) if isinstance(_synth, dict) else synth_report.content
             except json.JSONDecodeError:
                 summary = synth_report.content
+            if not synth_report.ok:
+                summary = summary or (
+                    "(synthesis failed; see per-aspect findings in this report)"
+                )
             report = AnalysisReport(
                 job_id=job.job_id,
                 repo_url=url,

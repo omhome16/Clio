@@ -1,4 +1,4 @@
-# tests/test_orchestrator.py
+﻿# tests/test_orchestrator.py
 import json
 
 import pytest
@@ -9,25 +9,23 @@ from clio.events import (
     EVENT_SUBAGENT_DONE, EVENT_SUBAGENT_START, Event, EventBus,
 )
 from clio.job import load_job
-from clio.llm import LLMMessage, MockLLM
+from clio.llm import LLMMessage, FakeLLM
 from clio.orchestrator import AnalysisReport, Orchestrator
 from clio.sandbox import Sandbox
 
 
-def _mock_handler(limits):
+def _fake_handler(limits):
     def handler(messages, model):
         if model == limits.frontier_model:
             return json.dumps({"final": '{"summary": "merged", "modules": ["core"]}'})
-        if len(messages) < 3:
-            return json.dumps({"tool": "list_tree", "args": {}})
-        return json.dumps({"final": '{"findings": ["nothing"]}'})
+        return json.dumps({"final": '{"findings": ["fake finding"]}'})
     return handler
 
 
 async def test_full_pipeline(tmp_path, local_repo):
     limits = Limits(workspace_root=tmp_path / "sandbox", max_agent_steps=5)
     sandbox = Sandbox(root=tmp_path / "sandbox", limits=limits)
-    client = MockLLM(handler=_mock_handler(limits))
+    client = FakeLLM(handler=_fake_handler(limits))
     bus = EventBus()
     seen = []
     bus.subscribe(seen.append)
@@ -35,7 +33,7 @@ async def test_full_pipeline(tmp_path, local_repo):
     report = await orch.run(local_repo.as_uri(), root=tmp_path, job_id="clio-test")
     assert report.repo_url == local_repo.as_uri()
     assert len(report.commit_sha) == 12
-    assert set(report.aspects) == {"structure", "dependencies", "risks", "entrypoints"}
+    assert set(report.aspects) == {"risks", "entrypoints"}
     assert all(a["ok"] for a in report.aspects.values())
     assert report.summary == "merged"
     assert load_job("clio-test", tmp_path).status == "PERSISTED"
@@ -43,14 +41,14 @@ async def test_full_pipeline(tmp_path, local_repo):
     assert report_file.is_file()
     types = [e.type for e in seen]
     assert EVENT_JOB_CLONED in types and EVENT_JOB_PERSISTED in types
-    assert types.count(EVENT_SUBAGENT_START) == 4
-    assert types.count(EVENT_SUBAGENT_DONE) == 4
+    assert types.count(EVENT_SUBAGENT_START) == 2
+    assert types.count(EVENT_SUBAGENT_DONE) == 2
 
 
 async def test_failed_clone_marks_job_failed(tmp_path):
     limits = Limits(workspace_root=tmp_path / "sandbox")
     sandbox = Sandbox(root=tmp_path / "sandbox", limits=limits)
-    client = MockLLM(handler=_mock_handler(limits))
+    client = FakeLLM(handler=_fake_handler(limits))
     bus = EventBus()
     seen = []
     bus.subscribe(seen.append)
@@ -75,7 +73,7 @@ def test_report_roundtrip():
 async def test_pipeline_builds_graph(tmp_path, local_repo):
     limits = Limits(workspace_root=tmp_path / "sandbox", max_agent_steps=5)
     sandbox = Sandbox(root=tmp_path / "sandbox", limits=limits)
-    client = MockLLM(handler=_mock_handler(limits))
+    client = FakeLLM(handler=_fake_handler(limits))
     bus = EventBus()
     seen = []
     bus.subscribe(seen.append)
