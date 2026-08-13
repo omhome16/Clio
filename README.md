@@ -31,9 +31,9 @@ token meters, crash-safe resume.
 ## Architecture
 
 ```
-Frontend (vanilla JS + vis.js)       ← live harness view, architecture
-        │  SSE/WebSocket                 graph, impact mode, chat
-FastAPI API layer
+Dashboard (vanilla JS + SSE, no build step)
+        │  SSE event stream / JSON API
+Local HTTP server (stdlib http.server)
         │
 Harness runtime (the showpiece)      ← orchestrator state machine, async
         │                                 scheduler, tool registry, subagent
@@ -41,25 +41,92 @@ Harness runtime (the showpiece)      ← orchestrator state machine, async
 Analysis pipeline                    ← ingest → index → fan-out →
         │                                 synthesize → graph-build → persist
 Stores                               ← sandbox workspace, code graph (SQLite),
-                                         knowledge store, session store
+                                         report archive, session store
 ```
 
 Details: see `blueprint.md` (not tracked — ask the author).
 
 ---
 
-## Features (planned)
+## Quickstart
+
+Requirements: Python 3.11+ (no third-party dependencies).
+
+```bash
+# 1. install (editable, so `python -m clio` works from anywhere)
+pip install -e .
+
+# 2. configure your provider key
+copy .env.example .env        # then fill in GEMINI_API_KEY (or GROQ_API_KEY)
+
+# 3a. run the dashboard (terminal shows live logs; clio.log gets full tracebacks)
+python -m clio.web            # → http://127.0.0.1:8790
+
+# 3b. or headless CLI analysis
+python -m clio https://github.com/user/repo.git
+
+# tests
+python -m pytest              # 195 tests, offline (uses a scripted fake LLM)
+```
+
+`.env` (all optional):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CLIO_PROVIDER` | `gemini` | `gemini` or `groq` |
+| `GEMINI_API_KEY` | — | required for the Gemini provider |
+| `GROQ_API_KEY` | — | required for the Groq provider |
+| `CLIO_CHEAP_MODEL` | `gemini-2.5-flash` | model for fan-out subagents |
+| `CLIO_FRONTIER_MODEL` | `gemini-2.5-flash` | model for synthesis/merge |
+
+If a provider key is missing or the API rejects the request, the error is
+logged to the terminal and `clio.log` (never printed as a raw URL — `?key=`
+is redacted).
+
+---
+
+## How to try it
+
+1. Start the dashboard (`python -m clio.web`), paste a repo URL — anything
+   on GitHub works; for a quick smoke test, point it at a small repo.
+2. Watch the **event ledger** stream live: clone → graph → subagent fan-out
+   → synthesis → persist. The status lamp glows while a job runs.
+3. Click a job in **Job history** → the JSON report and the **Module map**
+   load. Hover modules to trace edges; click one and hit **Impact** to see
+   which modules break if it breaks.
+4. Open **Ask** (top right) and interrogate the repo — the model answers
+   over sandboxed tools (`list_tree`, `graph_query`, `impact`, …) and you
+   watch each tool call stream in.
+5. CLI equivalent: `python -m clio <url>` prints the event stream, then the
+   report; add `--impact app::serve` for a symbol's blast radius.
+
+## What to review
+
+- **Frontend** — dashboard redesign (cards, system font stack, dark/light
+  theme, rounded module map, chat-style Ask panel). Screenshots from the
+  final QA pass: `C:\Users\omnaw\AppData\Local\Temp\opencode\shots\`.
+- **Logging** — `src/clio/logging.py` wires console + file logging; every
+  job/ask failure now prints a full traceback to the launching terminal.
+- **Map fix** — `resolve_module` now strips symbol suffixes, so
+  `from clio.config import Limits` draws the right edge (was: missing edges
+  on src-layout repos).
+- **No mock anywhere** — `FakeLLM` exists only in tests; the product has
+  zero canned responses.
+
+---
+
+## Features
 
 - **Sandboxed analysis** — the repo is cloned into an isolated workspace
   with timeouts, output caps, and disk guards; analysis tools never touch
   the network.
 - **Parallel subagent fan-out** — module map, dependencies, data flow,
   entry points, risks, tests, docs — each aspect in its own isolated
-  context window; frontend model for fan-out, strong model for synthesis.
-- **Architecture map** — interactive graph of modules, files, symbols,
-  and their relationships.
+  context window; cheap model for fan-out, strong model for synthesis.
+- **Architecture map** — deterministic SVG map of modules, clusters, and
+  edges; hover tracing and impact mode.
 - **Impact analysis** — pick any file/symbol/module and get a ranked
-  "what breaks if this breaks" report with evidence snippets.
+  "what breaks if this breaks" report with evidence.
 - **Persistent Q&A** — ask follow-ups across sessions; the analysis is
   remembered, not re-read.
 
@@ -67,12 +134,10 @@ Details: see `blueprint.md` (not tracked — ask the author).
 
 ## Tech stack
 
-- **Python 3 + FastAPI** (async runtime, SSE event streams)
-- **tree-sitter** (language-aware code parsing)
-- **SQLite** (code graph + sessions)
-- **sentence-transformers** (local embeddings for retrieval — free)
-- **vanilla JS + vis.js** (frontend, no build step)
-- **Model-agnostic LLM adapter** (Gemini free tier first, any provider later)
+- **Python 3.11+ stdlib only** — `http.server` (dashboard + SSE), `ast`
+  (code graph), `urllib` (LLM API calls), `sqlite3` (graph store)
+- **Hand-rolled SVG map** — zero-dependency frontend, no build step
+- **Model-agnostic LLM adapter** — Gemini and Groq via raw REST
 
 ---
 
