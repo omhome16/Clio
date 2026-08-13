@@ -1,8 +1,14 @@
-"""Model-agnostic LLM client interface, mock, and Gemini implementation."""
+"""Model-agnostic LLM client interface, Gemini, and Groq implementations.
+
+``FakeLLM`` is a scriptable offline stub used only by tests — it is not a
+provider and cannot be selected from the product.
+"""
 import asyncio
 import json
 import os
 import re
+import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -13,6 +19,45 @@ from clio.config import Limits, get_limits, load_env
 
 class LLMError(RuntimeError):
     pass
+
+
+class RateLimitError(LLMError):
+    """HTTP 429 / quota exhaustion. ``retry_after`` is the suggested wait in
+    seconds (parsed from the provider body or Retry-After header)."""
+
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class ServerError(LLMError):
+    """HTTP 5xx — transient backend failures; safe to retry."""
+
+
+class NetworkError(LLMError):
+    """Connection-level failures (timeouts, DNS, refused) — safe to retry."""
+
+
+def is_retryable(exc: BaseException) -> bool:
+    """True for transient failures (quota, 5xx, network) that warrant a retry."""
+    return isinstance(exc, (RateLimitError, ServerError, NetworkError, TimeoutError))
+
+
+_RETRY_IN_BODY = re.compile(r"retry\s+in\s+(\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
+
+
+def parse_retry_after(header: str | None, body: str) -> float | None:
+    """Best-effort retry delay: Retry-After header first, then `retry in Xs`
+    from the response body."""
+    if header:
+        try:
+            return max(float(header), 0.0)
+        except ValueError:
+            pass  # rare HTTP-date form; fall through to body parsing
+    match = _RETRY_IN_BODY.search(body)
+    if match:
+        return float(match.group(1))
+    return None
 
 
 @dataclass(frozen=True)
@@ -31,7 +76,12 @@ class LLMClient(Protocol):
     ) -> str: ...
 
 
-class MockLLM:
+class FakeLLM:
+    """Test-only offline stub: serves scripted responses or a handler.
+
+    Never reachable from the product (see ``make_client``); exists so tests
+    exercise the harness without network access.
+    """
     def __init__(
         self,
         responses: list[str] | None = None,
@@ -56,6 +106,15 @@ class MockLLM:
         return self._responses.pop(0)
 
 
+def _redact(url: str) -> str:
+    """Strip ``?key=...`` from a URL before it hits a log or error message."""
+    if "?" not in url:
+        return url
+    base, _, query = url.partition("?")
+    kept = [p for p in query.split("&") if not p.startswith("key=")]
+    return base + ("?" + "&".join(kept) if kept else "")
+
+
 def _post_json(url: str, payload: dict, timeout: int = 60) -> dict:
     """POST a JSON payload and return the parsed JSON response.
 
@@ -67,24 +126,117 @@ def _post_json(url: str, payload: dict, timeout: int = 60) -> dict:
         method="POST",
     )
     req.headers["Content-Type"] = "application/json"
+    safe_url = _redact(url)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as err:
         body = err.read().decode("utf-8", errors="replace")[:500]
-        raise LLMError(f"LLM API error {err.code} from {url}: {body}") from err
+        retry_after = parse_retry_after(
+            getattr(err, "headers", None).get("Retry-After") if getattr(err, "headers", None) else None,
+            body,
+        )
+        if err.code == 429:
+            raise RateLimitError(
+                f"LLM API error {err.code} from {safe_url}: {body}",
+                retry_after=retry_after,
+            ) from err
+        if 500 <= err.code < 600:
+            raise ServerError(
+                f"LLM API error {err.code} from {safe_url}: {body}"
+            ) from err
+        raise LLMError(f"LLM API error {err.code} from {safe_url}: {body}") from err
     except urllib.error.URLError as err:
-        raise LLMError(f"LLM API request to {url} failed: {err.reason}") from err
+        raise NetworkError(f"LLM API request to {safe_url} failed: {err.reason}") from err
+    except TimeoutError as err:
+        raise NetworkError(f"LLM API request to {safe_url} timed out") from err
 
 
-def mock_handler(limits: Limits):
+def fake_handler(limits: Limits):
     def handler(messages: list[LLMMessage], model: str | None) -> str:
         if model == limits.frontier_model:
             return json.dumps({"final": '{"summary": "merged", "modules": ["core"]}'})
         if len(messages) < 3:
             return json.dumps({"tool": "list_tree", "args": {}})
-        return json.dumps({"final": '{"findings": ["mock finding"]}'})
+        return json.dumps({"final": '{"findings": ["fake finding"]}'})
     return handler
+
+
+class RateLimiter:
+    """Thread-safe token bucket: at most one request per `60/rpm` seconds.
+
+    Shared process-wide per provider so parallel jobs, subagents, and Ask
+    sessions can never burst past the free-tier budget. Works across threads
+    because web.py runs each job in its own asyncio loop.
+    """
+
+    def __init__(self, rpm: int = 5) -> None:
+        self._interval = 60.0 / max(1, rpm)
+        self._lock = threading.Lock()
+        self._next_slot = 0.0
+
+    async def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                wait = self._next_slot - now
+                if wait <= 0:
+                    self._next_slot = now + self._interval
+                    return
+            await asyncio.sleep(min(wait, 2.0))
+
+    def reset(self) -> None:
+        with self._lock:
+            self._next_slot = 0.0
+
+
+_global_limiters: dict[str, RateLimiter] = {}
+_global_lock = threading.Lock()
+
+
+def get_global_limiter(provider: str, limits: Limits | None = None) -> RateLimiter | None:
+    """Process-wide limiter per provider, or None when rate limiting is off."""
+    limits = limits or get_limits()
+    if not limits.rate_limit:
+        return None
+    with _global_lock:
+        limiter = _global_limiters.get(provider)
+        if limiter is None:
+            limiter = RateLimiter(limits.rpm)
+            _global_limiters[provider] = limiter
+        return limiter
+
+
+async def _complete_with_retry(
+    url: str,
+    payload: dict,
+    *,
+    extract: Callable[[dict], str],
+    limiter: RateLimiter | None,
+    max_retries: int,
+    timeout: int = 60,
+) -> str:
+    """POST with a shared rate limiter and retry ladder.
+
+    Retryable failures (429 with its suggested wait, 5xx, network) are retried
+    up to ``max_retries`` times, honouring the provider's ``retry in Xs`` hint.
+    Permanent 4xx errors surface immediately.
+    """
+    last: BaseException | None = None
+    for attempt in range(max_retries + 1):
+        if limiter is not None:
+            await limiter.acquire()
+        try:
+            data = await asyncio.to_thread(_post_json, url, payload, timeout)
+            return extract(data)
+        except RateLimitError as exc:
+            last = exc
+            await asyncio.sleep(exc.retry_after or min(2.0 ** attempt, 8.0))
+        except (ServerError, NetworkError, TimeoutError) as exc:
+            last = exc
+            await asyncio.sleep(min(2.0 ** attempt, 8.0))
+    assert last is not None
+    raise last
 
 
 class GeminiClient:
@@ -96,6 +248,9 @@ class GeminiClient:
         if not self._api_key:
             raise LLMError("GEMINI_API_KEY is not set")
         self._base_url = base_url or "https://generativelanguage.googleapis.com/v1beta"
+        limits = get_limits()
+        self._limiter = get_global_limiter("gemini", limits)
+        self._max_retries = limits.max_retries
 
     async def complete(
         self,
@@ -114,10 +269,16 @@ class GeminiClient:
             "generationConfig": {"maxOutputTokens": max_tokens},
         }
         url = f"{self._base_url}/models/{model}:generateContent?key={self._api_key}"
-        data = await asyncio.to_thread(_post_json, url, payload)
-        return "".join(
-            part.get("text", "")
-            for part in data["candidates"][0]["content"]["parts"]
+
+        def extract(data: dict) -> str:
+            return "".join(
+                part.get("text", "")
+                for part in data["candidates"][0]["content"]["parts"]
+            )
+
+        return await _complete_with_retry(
+            url, payload, extract=extract,
+            limiter=self._limiter, max_retries=self._max_retries,
         )
 
 
@@ -134,6 +295,9 @@ class GroqClient:
         if not self._api_key:
             raise LLMError("GROQ_API_KEY is not set")
         self._base_url = base_url.rstrip("/")
+        limits = get_limits()
+        self._limiter = get_global_limiter("groq", limits)
+        self._max_retries = limits.max_retries
 
     async def complete(
         self,
@@ -149,8 +313,14 @@ class GroqClient:
             "max_tokens": max_tokens,
         }
         url = f"{self._base_url}/chat/completions"
-        data = await asyncio.to_thread(_post_json, url, payload)
-        return data["choices"][0]["message"]["content"]
+
+        def extract(data: dict) -> str:
+            return data["choices"][0]["message"]["content"]
+
+        return await _complete_with_retry(
+            url, payload, extract=extract,
+            limiter=self._limiter, max_retries=self._max_retries,
+        )
 
 
 @dataclass(frozen=True)
@@ -197,11 +367,14 @@ def parse_reply(text: str) -> LLMReply:
 
 
 def make_client(provider: str, limits: Limits | None = None) -> LLMClient:
-    """Build the client for ``provider`` (mock | gemini | groq); unknown
-    names fall back to the mock client."""
+    """Build the client for ``provider`` (gemini | groq). Unknown provider
+    names raise ``LLMError`` so misconfiguration fails loudly."""
     load_env()
     if provider == "gemini":
         return GeminiClient()
     if provider == "groq":
         return GroqClient()
-    return MockLLM(handler=mock_handler(limits or get_limits()))
+    raise LLMError(
+        f"unknown provider {provider!r} (choose from: gemini, groq). "
+        "Set CLIO_PROVIDER in .env"
+    )

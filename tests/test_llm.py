@@ -1,7 +1,7 @@
-import pytest
+﻿import pytest
 
 from clio.llm import (
-    GeminiClient, LLMError, LLMMessage, MockLLM, ToolCall, parse_reply,
+    GeminiClient, LLMError, LLMMessage, FakeLLM, ToolCall, parse_reply,
 )
 
 
@@ -40,23 +40,23 @@ def test_parse_empty_is_none():
     assert parse_reply("").kind == "none"
 
 
-async def test_mock_llm_pops_scripted():
-    mock = MockLLM(responses=["one", "two"])
-    out1 = await mock.complete([LLMMessage(role="user", content="hi")], model="m")
-    out2 = await mock.complete([LLMMessage(role="user", content="hi")], model="m")
+async def test_fake_llm_pops_scripted():
+    fake = FakeLLM(responses=["one", "two"])
+    out1 = await fake.complete([LLMMessage(role="user", content="hi")], model="m")
+    out2 = await fake.complete([LLMMessage(role="user", content="hi")], model="m")
     assert (out1, out2) == ("one", "two")
-    assert len(mock.calls) == 2
+    assert len(fake.calls) == 2
 
 
-async def test_mock_llm_exhausted_raises():
-    mock = MockLLM(responses=[])
+async def test_fake_llm_exhausted_raises():
+    fake = FakeLLM(responses=[])
     with pytest.raises(LLMError):
-        await mock.complete([LLMMessage(role="user", content="hi")])
+        await fake.complete([LLMMessage(role="user", content="hi")])
 
 
-async def test_mock_llm_handler_mode():
-    mock = MockLLM(handler=lambda messages, model: f"handled-{model}")
-    out = await mock.complete([LLMMessage(role="user", content="hi")], model="cheap")
+async def test_fake_llm_handler_mode():
+    fake = FakeLLM(handler=lambda messages, model: f"handled-{model}")
+    out = await fake.complete([LLMMessage(role="user", content="hi")], model="cheap")
     assert out == "handled-cheap"
 
 
@@ -72,7 +72,7 @@ import json
 import urllib.error
 
 from clio.config import get_limits
-from clio.llm import GeminiClient, LLMError, LLMMessage, _post_json, mock_handler
+from clio.llm import FakeLLM, GeminiClient, LLMError, LLMMessage, _post_json, fake_handler
 
 
 def test_post_json_sends_expected_request(monkeypatch):
@@ -162,13 +162,13 @@ async def test_gemini_joins_multi_part_text(monkeypatch):
     assert await GeminiClient().complete([LLMMessage("user", "x")]) == "a b"
 
 
-def test_mock_handler_scripted():
-    handler = mock_handler(get_limits())
+def test_fake_handler_scripted():
+    handler = fake_handler(get_limits())
     out = handler(
         [LLMMessage("user", "a"), LLMMessage("model", "b"), LLMMessage("user", "c")],
         "cheap",
     )
-    assert json.loads(out) == {"final": '{"findings": ["mock finding"]}'}
+    assert json.loads(out) == {"final": '{"findings": ["fake finding"]}'}
 # --- Groq provider + client factory (M7) ---
 from clio.llm import GroqClient, make_client
 
@@ -215,14 +215,11 @@ def test_groq_requires_key(monkeypatch):
         GroqClient(api_key=None)
 
 
-def test_make_client_mock_default():
-    assert isinstance(make_client("mock"), MockLLM)
-
-
-def test_make_client_unknown_falls_back_to_mock(monkeypatch):
+def test_make_client_unknown_raises(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    assert isinstance(make_client("wat"), MockLLM)
+    with pytest.raises(LLMError):
+        make_client("wat")
 
 
 def test_make_client_gemini(monkeypatch):
@@ -239,3 +236,125 @@ def test_make_client_groq_without_key_raises(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     with pytest.raises(LLMError):
         make_client("groq")
+
+
+# --- Rate limiting + 429-aware retry (Phase 0) ---
+from clio.llm import (
+    RateLimitError, ServerError, NetworkError, RateLimiter, is_retryable,
+    parse_retry_after,
+)
+
+
+def test_parse_retry_after_header_wins():
+    assert parse_retry_after("32", "retry in 5s") == 32.0
+
+
+def test_parse_retry_after_body_fallback():
+    body = "Quota exceeded for metric: x, limit: 5. Please retry in 32.345s."
+    assert parse_retry_after(None, body) == 32.345
+
+
+def test_parse_retry_after_none_when_absent():
+    assert parse_retry_after(None, "all good") is None
+
+
+def test_is_retryable_classifies():
+    assert is_retryable(RateLimitError("quota"))
+    assert is_retryable(ServerError("500"))
+    assert is_retryable(NetworkError("dns"))
+    assert not is_retryable(LLMError("bad request 400"))
+
+
+def test_post_json_429_raises_rate_limit_error(monkeypatch):
+    def boom(req, timeout=60):
+        raise urllib.error.HTTPError(
+            "https://api.test/v1/x", 429, "Too Many Requests", None,
+            io.BytesIO(b"Please retry in 12.5s."),
+        )
+
+    monkeypatch.setattr("clio.llm.urllib.request.urlopen", boom)
+    with pytest.raises(RateLimitError) as ei:
+        _post_json("https://api.test/v1/x", {})
+    assert ei.value.retry_after == 12.5
+
+
+def test_post_json_500_raises_server_error(monkeypatch):
+    def boom(req, timeout=60):
+        raise urllib.error.HTTPError(
+            "https://api.test/v1/x", 503, "Unavailable", None, io.BytesIO(b"down"),
+        )
+
+    monkeypatch.setattr("clio.llm.urllib.request.urlopen", boom)
+    with pytest.raises(ServerError):
+        _post_json("https://api.test/v1/x", {})
+
+
+def test_post_json_400_raises_plain_llm_error(monkeypatch):
+    def boom(req, timeout=60):
+        raise urllib.error.HTTPError(
+            "https://api.test/v1/x", 400, "Bad Request", None, io.BytesIO(b"nope"),
+        )
+
+    monkeypatch.setattr("clio.llm.urllib.request.urlopen", boom)
+    with pytest.raises(LLMError):
+        _post_json("https://api.test/v1/x", {})
+
+
+def test_rate_limiter_spacing():
+    limiter = RateLimiter(rpm=120)  # 0.5s per slot
+    assert limiter._interval == pytest.approx(0.5)
+
+
+async def test_retry_waits_rate_limit_hint(monkeypatch):
+    from clio.llm import _complete_with_retry
+
+    calls = {"n": 0}
+
+    def fake_post(url, payload, timeout=60):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RateLimitError("retry in 0.01s", retry_after=0.01)
+        return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+    monkeypatch.setattr("clio.llm._post_json", fake_post)
+    out = await _complete_with_retry(
+        "https://api.test/v1/x", {},
+        extract=lambda d: "".join(
+            p.get("text", "") for p in d["candidates"][0]["content"]["parts"]
+        ),
+        limiter=None, max_retries=2,
+    )
+    assert out == "ok"
+    assert calls["n"] == 2
+
+
+async def test_retry_exhausted_raises(monkeypatch):
+    from clio.llm import _complete_with_retry
+
+    def fake_post(url, payload, timeout=60):
+        raise RateLimitError("retry in 0.01s", retry_after=0.01)
+
+    monkeypatch.setattr("clio.llm._post_json", fake_post)
+    with pytest.raises(RateLimitError):
+        await _complete_with_retry(
+            "https://api.test/v1/x", {},
+            extract=lambda d: "x", limiter=None, max_retries=2,
+        )
+
+
+async def test_retry_non_retryable_immediate(monkeypatch):
+    from clio.llm import _complete_with_retry
+
+    calls = {"n": 0}
+
+    def fake_post(url, payload, timeout=60):
+        calls["n"] += 1
+        raise LLMError("bad request 400")
+
+    monkeypatch.setattr("clio.llm._post_json", fake_post)
+    with pytest.raises(LLMError):
+        await _complete_with_retry(
+            "https://api.test/v1/x", {},
+            extract=lambda d: "x", limiter=None, max_retries=2,
+        )
+    assert calls["n"] == 1  # no retry on permanent errors

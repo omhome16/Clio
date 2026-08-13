@@ -93,6 +93,12 @@ class Subagent:
             text = await self._client.complete(messages, model=self._model)
             reply = parse_reply(text)
             if reply.kind == "tool":
+                if not self.spec.tools:
+                    # No tools in this agent's toolset: a tool call is a
+                    # prompt/parse failure, not something we can service.
+                    ok = False
+                    content = text or "(model requested a tool but none are available)"
+                    break
                 tool_calls += 1
                 self._emit(EVENT_SUBAGENT_TOOL, {"name": self.spec.name, "tool": reply.tool.tool, "args": reply.tool.args})
                 result = await self._registry.execute(reply.tool.tool, reply.tool.args)
