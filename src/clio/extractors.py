@@ -152,14 +152,24 @@ def _go_imports(text: str) -> list[str]:
 
 
 def extract(
-    text: str, lang: str, importer_dir: str = ""
+    text: str, lang: str, importer_dir: str = "", go_module: str = ""
 ) -> tuple[list[tuple[str, str, int]], list[str]]:
-    """Return (symbols as (name, kind, line), import targets). No call edges."""
+    """Return (symbols as (name, kind, line), import targets). No call edges.
+
+    ``go_module`` is the repo's go.mod module path: internal Go imports
+    (``github.com/acme/app/cmd/util``) are stripped to their in-repo path
+    (``cmd/util``) so they match module ids; external ones are untouched.
+    """
     symbols: list[tuple[str, str, int]] = []
     imports: list[str] = []
 
     if lang == "go":
         imports = _go_imports(text)
+        if go_module:
+            prefix = go_module + "/"
+            imports = [
+                t[len(prefix):] if t.startswith(prefix) else t for t in imports
+            ]
     else:
         for pattern, group in _IMPORT_PATTERNS.get(lang, []):
             for m in re.finditer(pattern, text, re.MULTILINE):

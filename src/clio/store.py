@@ -178,7 +178,8 @@ class GraphStore:
     def modules_importing(self, module: str) -> list[str]:
         """Modules importing `module` directly, any of its submodules, or —
         for src-layout repos — a known module whose dotted path ends with the
-        import target's module part (module "src.clio.x" imported as "clio.x")."""
+        import target's module part (module "src.clio.x" imported as "clio.x").
+        Slash-path modules (foreign languages) match on "/" prefixes too."""
         with self._session() as conn:
             rows = conn.execute(
                 "SELECT src, target FROM imports ORDER BY src, target"
@@ -190,6 +191,7 @@ class GraphStore:
                 module == target
                 or module == tmod
                 or target.startswith(module + ".")
+                or target.startswith(module + "/")
                 or module.endswith("." + tmod)
             ):
                 srcs.add(src)

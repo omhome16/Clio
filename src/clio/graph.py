@@ -224,9 +224,22 @@ class _ModuleVisitor(ast.NodeVisitor):
         self._scope.append(name)
 
 
+def _go_module_path(root: Path) -> str:
+    """Module path from the repo's go.mod, or '' when absent."""
+    try:
+        go_mod = (root / "go.mod").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    for line in go_mod.splitlines():
+        if line.startswith("module "):
+            return line.split()[1].strip()
+    return ""
+
+
 def build_repo_graph(root: Path) -> RepoGraph:
     root = Path(root)
     graph = RepoGraph(root=str(root))
+    go_module = _go_module_path(root)
     for path in iter_source_files(root):
         lang = detect_language(path) or ""
         if lang == "python":
@@ -252,7 +265,7 @@ def build_repo_graph(root: Path) -> RepoGraph:
         try:
             symbols, imports = extract(
                 path.read_text(encoding="utf-8", errors="replace"),
-                lang, importer_dir=importer_dir,
+                lang, importer_dir=importer_dir, go_module=go_module,
             )
         except OSError:
             graph.skipped.append(str(path.relative_to(root)))

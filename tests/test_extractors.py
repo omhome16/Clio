@@ -59,6 +59,36 @@ def test_go_imports_and_symbols():
     assert ("hello", "function", 13) in symbols
 
 
+def test_go_internal_import_prefix_stripped():
+    text = (
+        'package util\n\n'
+        'import (\n'
+        '\t"github.com/acme/app/cmd/util"\n'
+        '\t"github.com/acme/app/internal/keys"\n'
+        '\t"fmt"\n'
+        ')\n'
+    )
+    _, imports = extract(text, "go", go_module="github.com/acme/app")
+    assert imports == ["cmd/util", "internal/keys", "fmt"]
+
+
+def test_go_module_prefix_only_when_set():
+    text = 'package util\nimport "github.com/acme/app/cmd/util"\n'
+    _, imports = extract(text, "go")
+    assert imports == ["github.com/acme/app/cmd/util"]
+
+
+def test_go_module_prefix_via_repo_graph(tmp_path, write_tree):
+    root = write_tree({
+        "go.mod": "module github.com/acme/app\n",
+        "cmd/util/util.go": 'package util\n\nimport "github.com/acme/app/internal/keys"\n\nfunc helper() string { return keys.K() }\n',
+        "internal/keys/keys.go": "package keys\n\nfunc K() string { return \"k\" }\n",
+    })
+    graph = build_repo_graph(root)
+    assert graph.imports["cmd/util/util"] == ["internal/keys"]
+    assert graph.imports["internal/keys/keys"] == []
+
+
 def test_java_imports_and_class():
     text = (
         "package com.example;\n"

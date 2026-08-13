@@ -124,3 +124,19 @@ def test_modules_importing_src_layout_alias(tmp_path, write_tree):
     db = tmp_path / "graph.db"
     GraphStore(db).save(build_repo_graph(root))
     assert GraphStore(db).modules_importing("src.clio.core") == ["src.clio.main"]
+
+
+def test_modules_importing_slash_path_prefix(tmp_path, write_tree):
+    root = write_tree({
+        "src/util.ts": "import { helper } from './util/helper';\n",
+        "src/util/helper.ts": "export function helper(x) { return x; }\n",
+        "src/app.ts": "import { format } from './util/format';\n",
+        "src/util/format.ts": "export function format(x) { return x; }\n",
+    })
+    db = tmp_path / "graph.db"
+    GraphStore(db).save(build_repo_graph(root))
+    # directory-level query: everything importing anything under src/util
+    assert GraphStore(db).modules_importing("src/util") == ["src/app", "src/util"]
+    # file-level queries hit the exact importer
+    assert GraphStore(db).modules_importing("src/util/helper") == ["src/util"]
+    assert GraphStore(db).modules_importing("src/util/format") == ["src/app"]
