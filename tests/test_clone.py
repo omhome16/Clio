@@ -8,15 +8,28 @@ from clio.config import Limits
 from clio.sandbox import Sandbox
 
 
-@pytest.mark.parametrize("bad", ["", "ftp://x/y", "javascript:alert(1)", "not-a-url", "https://evil.com/x.git"])
+@pytest.mark.parametrize("bad", ["", "ftp://x/y", "javascript:alert(1)", "not-a-url", "ssh://git@x/y"])
 def test_validate_repo_url_rejects(bad):
     with pytest.raises(CloneError):
         validate_repo_url(bad)
 
 
-@pytest.mark.parametrize("good", ["https://github.com/omhome16/Clio.git", "file:///tmp/x"])
+@pytest.mark.parametrize("good", [
+    "https://github.com/omhome16/Clio.git",
+    "https://gitlab.com/team/repo.git",
+    "https://codeberg.org/user/repo",
+    "https://evil.example.com/x.git",
+    "file:///tmp/x",
+])
 def test_validate_repo_url_accepts(good):
     validate_repo_url(good)
+
+
+def test_validate_repo_url_honors_allowlist():
+    limits = Limits(allowed_hosts=("github.com",))
+    validate_repo_url("https://github.com/x/y.git", limits)
+    with pytest.raises(CloneError):
+        validate_repo_url("https://evil.example.com/x.git", limits)
 
 
 def test_clone_repo_success(tmp_path, local_repo):

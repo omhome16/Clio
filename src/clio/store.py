@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     name TEXT NOT NULL,
     kind TEXT NOT NULL,
     module TEXT NOT NULL,
-    line INTEGER NOT NULL
+    line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS imports (
     src TEXT NOT NULL,
@@ -50,6 +51,10 @@ class GraphStore:
         conn = sqlite3.connect(str(self.db_path))
         conn.execute("PRAGMA journal_mode=DELETE")
         conn.executescript(SCHEMA)
+        try:
+            conn.execute("ALTER TABLE symbols ADD COLUMN end_line INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         return conn
 
     @contextmanager
@@ -78,9 +83,10 @@ class GraphStore:
                 sorted(graph.modules.items()),
             )
             conn.executemany(
-                "INSERT OR IGNORE INTO symbols(id, name, kind, module, line) VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO symbols(id, name, kind, module, line, end_line) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 [
-                    (f"{s.module}::{s.name}", s.name, s.kind, s.module, s.line)
+                    (f"{s.module}::{s.name}", s.name, s.kind, s.module, s.line, s.end_line)
                     for s in graph.symbols
                 ],
             )
@@ -102,9 +108,9 @@ class GraphStore:
             meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
             modules = dict(conn.execute("SELECT name, path FROM modules").fetchall())
             symbols = [
-                Symbol(name=name, kind=kind, module=module, line=line)
-                for name, kind, module, line in conn.execute(
-                    "SELECT name, kind, module, line FROM symbols ORDER BY rowid"
+                Symbol(name=name, kind=kind, module=module, line=line, end_line=end_line)
+                for name, kind, module, line, end_line in conn.execute(
+                    "SELECT name, kind, module, line, end_line FROM symbols ORDER BY rowid"
                 )
             ]
             imports: dict[str, list[str]] = {m: [] for m in modules}

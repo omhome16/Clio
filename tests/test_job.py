@@ -61,6 +61,6 @@ def test_record_clone_sets_workspace_and_sha(tmp_path):
 
 def test_statuses_are_stable():
     assert JOB_STATUSES == (
-        "QUEUED", "CLONING", "INDEXING", "ANALYZING",
-        "SYNTHESIZING", "GRAPHING", "PERSISTED", "FAILED",
+        "QUEUED", "CLONING", "INDEXING", "GRAPHING",
+        "GUIDING", "PERSISTED", "FAILED",
     )

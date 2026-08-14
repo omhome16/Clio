@@ -126,6 +126,10 @@ def _post_json(url: str, payload: dict, timeout: int = 60) -> dict:
         method="POST",
     )
     req.headers["Content-Type"] = "application/json"
+    req.headers["User-Agent"] = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+    )  # some providers (Groq) WAF-block the default python-urllib UA
     safe_url = _redact(url)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -154,11 +158,7 @@ def _post_json(url: str, payload: dict, timeout: int = 60) -> dict:
 
 def fake_handler(limits: Limits):
     def handler(messages: list[LLMMessage], model: str | None) -> str:
-        if model == limits.frontier_model:
-            return json.dumps({"final": '{"summary": "merged", "modules": ["core"]}'})
-        if len(messages) < 3:
-            return json.dumps({"tool": "list_tree", "args": {}})
-        return json.dumps({"final": '{"findings": ["fake finding"]}'})
+        return "fake guide text"
     return handler
 
 
@@ -259,7 +259,7 @@ class GeminiClient:
         model: str | None = None,
         max_tokens: int = 2000,
     ) -> str:
-        model = model or "gemini-2.0-flash"
+        model = model or "gemini-2.5-flash"
         payload = {
             "contents": [
                 {"role": "user" if m.role == "user" else "model",
@@ -323,6 +323,48 @@ class GroqClient:
         )
 
 
+class OllamaClient:
+    """Client for a local Ollama server via its OpenAI-compatible endpoint.
+
+    No API key and no rate limiting (the model runs on your own machine), but
+    requests get a generous timeout: a 7B coder model offloaded to CPU can
+    take minutes to finish a long completion.
+    """
+
+    def __init__(self, base_url: str | None = None, timeout: int = 900):
+        load_env()
+        self._base_url = (
+            base_url or os.environ.get("CLIO_OLLAMA_BASE_URL", "http://localhost:11434/v1")
+        ).rstrip("/")
+        self._timeout = timeout
+        limits = get_limits()
+        self._limiter = None  # local server: no quota to pace
+        self._max_retries = limits.max_retries
+
+    async def complete(
+        self,
+        messages: list[LLMMessage],
+        *,
+        model: str | None = None,
+        max_tokens: int = 2000,
+    ) -> str:
+        model = model or "qwen2.5-coder:7b"
+        payload = {
+            "model": model,
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "max_tokens": max_tokens,
+        }
+        url = f"{self._base_url}/chat/completions"
+
+        def extract(data: dict) -> str:
+            return data["choices"][0]["message"]["content"]
+
+        return await _complete_with_retry(
+            url, payload, extract=extract,
+            limiter=None, max_retries=self._max_retries, timeout=self._timeout,
+        )
+
+
 @dataclass(frozen=True)
 class ToolCall:
     tool: str
@@ -367,14 +409,16 @@ def parse_reply(text: str) -> LLMReply:
 
 
 def make_client(provider: str, limits: Limits | None = None) -> LLMClient:
-    """Build the client for ``provider`` (gemini | groq). Unknown provider
-    names raise ``LLMError`` so misconfiguration fails loudly."""
+    """Build the client for ``provider`` (gemini | groq | ollama). Unknown
+    provider names raise ``LLMError`` so misconfiguration fails loudly."""
     load_env()
     if provider == "gemini":
         return GeminiClient()
     if provider == "groq":
         return GroqClient()
+    if provider == "ollama":
+        return OllamaClient()
     raise LLMError(
-        f"unknown provider {provider!r} (choose from: gemini, groq). "
+        f"unknown provider {provider!r} (choose from: gemini, groq, ollama). "
         "Set CLIO_PROVIDER in .env"
     )

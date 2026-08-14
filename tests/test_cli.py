@@ -39,7 +39,7 @@ async def test_cli_end_to_end_fake(tmp_path, local_repo, monkeypatch, capsys):
     assert "REPORT:" in out
     payload = out.split("REPORT:", 1)[1]
     report = json.loads(payload)
-    assert report["summary"] == "merged"
+    assert report["summary"] == "fake guide text"
     assert report["graph"]["modules"] >= 3
     assert (tmp_path / "sandbox" / "jobs").is_dir()
 

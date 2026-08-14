@@ -9,8 +9,8 @@ from pathlib import Path
 from clio.clone import CloneResult
 
 JOB_STATUSES = (
-    "QUEUED", "CLONING", "INDEXING", "ANALYZING",
-    "SYNTHESIZING", "GRAPHING", "PERSISTED", "FAILED",
+    "QUEUED", "CLONING", "INDEXING", "GRAPHING",
+    "GUIDING", "PERSISTED", "FAILED",
 )
 
 

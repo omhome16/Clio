@@ -5,8 +5,8 @@ import pytest
 
 from clio.config import Limits
 from clio.events import (
-    EVENT_JOB_CLONED, EVENT_JOB_FAILED, EVENT_JOB_GRAPHED, EVENT_JOB_PERSISTED,
-    EVENT_SUBAGENT_DONE, EVENT_SUBAGENT_START, Event, EventBus,
+    EVENT_JOB_CLONED, EVENT_JOB_FAILED, EVENT_JOB_GRAPHED, EVENT_JOB_GUIDING,
+    EVENT_JOB_PERSISTED, EVENT_JOB_STAGE, Event, EventBus,
 )
 from clio.job import load_job
 from clio.llm import LLMMessage, FakeLLM
@@ -16,9 +16,7 @@ from clio.sandbox import Sandbox
 
 def _fake_handler(limits):
     def handler(messages, model):
-        if model == limits.frontier_model:
-            return json.dumps({"final": '{"summary": "merged", "modules": ["core"]}'})
-        return json.dumps({"final": '{"findings": ["fake finding"]}'})
+        return "fake guide text"
     return handler
 
 
@@ -33,16 +31,18 @@ async def test_full_pipeline(tmp_path, local_repo):
     report = await orch.run(local_repo.as_uri(), root=tmp_path, job_id="clio-test")
     assert report.repo_url == local_repo.as_uri()
     assert len(report.commit_sha) == 12
-    assert set(report.aspects) == {"risks", "entrypoints"}
-    assert all(a["ok"] for a in report.aspects.values())
-    assert report.summary == "merged"
+    assert set(report.guide["stages"]) == {"what", "how", "modules", "run"}
+    assert report.summary == "fake guide text"
     assert load_job("clio-test", tmp_path).status == "PERSISTED"
     report_file = (tmp_path / "jobs" / "clio-test.report.json")
     assert report_file.is_file()
+    guide_file = (tmp_path / "jobs" / "clio-test.guide.json")
+    assert guide_file.is_file()
+    assert json.loads(guide_file.read_text(encoding="utf-8"))["stages"]["what"]["text"] == "fake guide text"
     types = [e.type for e in seen]
     assert EVENT_JOB_CLONED in types and EVENT_JOB_PERSISTED in types
-    assert types.count(EVENT_SUBAGENT_START) == 2
-    assert types.count(EVENT_SUBAGENT_DONE) == 2
+    assert EVENT_JOB_GUIDING in types
+    assert types.count(EVENT_JOB_STAGE) == 8
 
 
 async def test_failed_clone_marks_job_failed(tmp_path):
@@ -63,8 +63,7 @@ async def test_failed_clone_marks_job_failed(tmp_path):
 def test_report_roundtrip():
     report = AnalysisReport(
         job_id="clio-1", repo_url="https://github.com/x/y.git", commit_sha="abc",
-        aspects={"a": {"ok": True, "content": "z"}}, summary="s",
-        created_at="2026-08-10T00:00:00+00:00",
+        summary="s", created_at="2026-08-10T00:00:00+00:00",
     )
     restored = AnalysisReport.from_dict(report.to_dict())
     assert restored == report
@@ -88,12 +87,12 @@ async def test_pipeline_builds_graph(tmp_path, local_repo):
     assert types.count(EVENT_JOB_GRAPHED) == 1
 
 
-def test_report_roundtrip_with_graph():
+def test_report_roundtrip_with_graph_and_guide():
     report = AnalysisReport(
         job_id="clio-1", repo_url="https://github.com/x/y.git", commit_sha="abc",
-        aspects={"a": {"ok": True, "content": "z"}}, summary="s",
-        created_at="2026-08-10T00:00:00+00:00",
+        summary="s", created_at="2026-08-10T00:00:00+00:00",
         graph={"modules": 3, "symbols": 2, "calls": 1, "clusters": 2},
+        guide={"stages": {"what": {"text": "t", "sources": []}}},
     )
     restored = AnalysisReport.from_dict(report.to_dict())
     assert restored == report

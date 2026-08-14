@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="clio", description="Analyze a git repository")
     parser.add_argument("url", help="https://github.com/... or file:// repo URL")
     parser.add_argument(
-        "--provider", choices=["gemini", "groq"], default=get_provider(),
+        "--provider", choices=["gemini", "groq", "ollama"], default=get_provider(),
         help="LLM provider (default: $CLIO_PROVIDER, gemini if unset)",
     )
     parser.add_argument("--job-id", default=None, help="override the generated job id")

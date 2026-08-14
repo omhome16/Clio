@@ -27,6 +27,7 @@ class Symbol:
     kind: str        # "function" | "class" | "method" | language-specific
     module: str      # dotted package path, e.g. "clio.orchestrator"
     line: int
+    end_line: int = 0  # 0 = unknown (regex-tier languages)
 
 
 @dataclass
@@ -135,6 +136,9 @@ class _ModuleVisitor(ast.NodeVisitor):
         self.imports: list[str] = []
         self.calls: list[CallEdge] = []
 
+    def _end_line(self, node) -> int:
+        return getattr(node, "end_lineno", 0) or 0
+
     def _caller(self) -> str:
         # "module::Class.method" for methods, "module::func" for functions,
         # "module" for module-level calls (dotted scope join, not "::").
@@ -192,7 +196,7 @@ class _ModuleVisitor(ast.NodeVisitor):
         return None
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._enter_def(node.name, "function", node.lineno)
+        self._enter_def(node.name, "function", node.lineno, self._end_line(node))
         self.generic_visit(node)
         self._scope.pop()
 
@@ -203,22 +207,28 @@ class _ModuleVisitor(ast.NodeVisitor):
         self._in_class = True
         self._scope.append(node.name)
         self.symbols.append(
-            Symbol(name=node.name, kind="class", module=self.module, line=node.lineno)
+            Symbol(
+                name=node.name, kind="class", module=self.module, line=node.lineno,
+                end_line=self._end_line(node),
+            )
         )
         self.generic_visit(node)
         self._scope.pop()
         self._in_class = prev
 
-    def _enter_def(self, name: str, kind: str, lineno: int) -> None:
+    def _enter_def(self, name: str, kind: str, lineno: int, end_lineno: int = 0) -> None:
         if not self._scope:
             self.symbols.append(
-                Symbol(name=name, kind=kind, module=self.module, line=lineno)
+                Symbol(
+                    name=name, kind=kind, module=self.module, line=lineno,
+                    end_line=end_lineno,
+                )
             )
         elif self._in_class and len(self._scope) == 1:
             self.symbols.append(
                 Symbol(
                     name=f"{self._scope[0]}.{name}", kind="method",
-                    module=self.module, line=lineno,
+                    module=self.module, line=lineno, end_line=end_lineno,
                 )
             )
         self._scope.append(name)

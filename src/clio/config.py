@@ -32,7 +32,7 @@ class Limits:
     clone_timeout_s: int = 120
     workspace_root: Path = field(default_factory=lambda: Path("sandbox"))
     exclude_dirs: tuple[str, ...] = _DEFAULT_EXCLUDE_DIRS
-    allowed_hosts: tuple[str, ...] = ("github.com",)
+    allowed_hosts: tuple[str, ...] = ()  # empty = any https host allowed
     max_tool_output_chars: int = 12_000
     max_file_read_chars: int = 8_000
     max_agent_steps: int = 10
@@ -40,13 +40,20 @@ class Limits:
     max_concurrency: int = 4
     task_max_retries: int = 2
     task_backoff_s: float = 0.5
-    cheap_model: str = "gemini-2.0-flash"
-    frontier_model: str = "gemini-2.5-pro"
+    cheap_model: str = "gemini-2.5-flash"
+    frontier_model: str = "gemini-2.5-flash"
     rpm: int = 5
     max_retries: int = 2
     rate_limit: bool = True
     repo_map_chars: int = 1200
     aspect_pack_chars: int = 6000
+
+
+def _env_hosts(name: str) -> tuple[str, ...]:
+    raw = os.environ.get(name)
+    if not raw:
+        return ()
+    return tuple(h.strip().lower() for h in raw.split(",") if h.strip())
 
 
 def get_limits() -> Limits:
@@ -56,6 +63,7 @@ def get_limits() -> Limits:
         max_files=_env_int("CLIO_MAX_FILES", 20_000),
         clone_timeout_s=_env_int("CLIO_CLONE_TIMEOUT_S", 120),
         workspace_root=Path(os.environ.get("CLIO_WORKSPACE_ROOT", "sandbox")),
+        allowed_hosts=_env_hosts("CLIO_ALLOWED_HOSTS"),
         max_tool_output_chars=_env_int("CLIO_MAX_TOOL_OUTPUT_CHARS", 12_000),
         max_file_read_chars=_env_int("CLIO_MAX_FILE_READ_CHARS", 8_000),
         max_agent_steps=_env_int("CLIO_MAX_AGENT_STEPS", 10),
@@ -63,8 +71,8 @@ def get_limits() -> Limits:
         max_concurrency=_env_int("CLIO_MAX_CONCURRENCY", 4),
         task_max_retries=_env_int("CLIO_TASK_MAX_RETRIES", 2),
         task_backoff_s=_env_float("CLIO_TASK_BACKOFF_S", 0.5),
-        cheap_model=os.environ.get("CLIO_CHEAP_MODEL", "gemini-2.0-flash"),
-        frontier_model=os.environ.get("CLIO_FRONTIER_MODEL", "gemini-2.5-pro"),
+        cheap_model=os.environ.get("CLIO_CHEAP_MODEL", "gemini-2.5-flash"),
+        frontier_model=os.environ.get("CLIO_FRONTIER_MODEL", "gemini-2.5-flash"),
         rpm=max(_env_int("CLIO_RPM", 5), 1),
         max_retries=_env_int("CLIO_MAX_RETRIES", 2),
         rate_limit=os.environ.get("CLIO_RATE_LIMIT", "1") not in ("0", "false", "no"),

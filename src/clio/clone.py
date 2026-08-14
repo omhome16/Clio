@@ -34,7 +34,7 @@ def validate_repo_url(url: str, limits: Limits | None = None) -> None:
     parsed = urlparse(url)
     if parsed.scheme == "https":
         host = (parsed.hostname or "").lower()
-        if host not in limits.allowed_hosts:
+        if limits.allowed_hosts and host not in limits.allowed_hosts:
             raise CloneError(f"https host '{host}' not allowed ({limits.allowed_hosts})")
     elif parsed.scheme != "file":
         raise CloneError(f"unsupported URL scheme '{parsed.scheme}'")

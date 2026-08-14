@@ -149,7 +149,7 @@ async def test_gemini_builds_expected_request(monkeypatch):
     ]
     assert captured["payload"]["generationConfig"] == {"maxOutputTokens": 42}
     assert captured["url"].startswith(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=test-key"
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=test-key"
     )
 
 
@@ -168,7 +168,7 @@ def test_fake_handler_scripted():
         [LLMMessage("user", "a"), LLMMessage("model", "b"), LLMMessage("user", "c")],
         "cheap",
     )
-    assert json.loads(out) == {"final": '{"findings": ["fake finding"]}'}
+    assert out == "fake guide text"
 # --- Groq provider + client factory (M7) ---
 from clio.llm import GroqClient, make_client
 
@@ -236,6 +236,66 @@ def test_make_client_groq_without_key_raises(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     with pytest.raises(LLMError):
         make_client("groq")
+
+
+# --- Ollama provider (local server, OpenAI-compatible endpoint) ---
+from clio.llm import OllamaClient
+
+
+async def test_ollama_builds_expected_request(monkeypatch):
+    captured = {}
+
+    def fake_post(url, payload, timeout=60):
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["timeout"] = timeout
+        return {"choices": [{"message": {"content": "sure"}}]}
+
+    monkeypatch.setattr("clio.llm._post_json", fake_post)
+    client = OllamaClient(base_url="http://localhost:11434/v1", timeout=900)
+    out = await client.complete(
+        [LLMMessage("user", "hi")], model="qwen2.5-coder:7b", max_tokens=7
+    )
+    assert out == "sure"
+    assert captured["url"] == "http://localhost:11434/v1/chat/completions"
+    assert captured["payload"] == {
+        "model": "qwen2.5-coder:7b",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 7,
+    }
+
+
+async def test_ollama_default_model(monkeypatch):
+    captured = {}
+
+    def fake_post(url, payload, timeout=60):
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": "x"}}]}
+
+    monkeypatch.setattr("clio.llm._post_json", fake_post)
+    await OllamaClient().complete([LLMMessage("user", "hi")])
+    assert captured["payload"]["model"] == "qwen2.5-coder:7b"
+
+
+async def test_ollama_generous_timeout(monkeypatch):
+    captured = {}
+
+    def fake_post(url, payload, timeout=60):
+        captured["timeout"] = timeout
+        return {"choices": [{"message": {"content": "x"}}]}
+
+    monkeypatch.setattr("clio.llm._post_json", fake_post)
+    await OllamaClient().complete([LLMMessage("user", "hi")])
+    assert captured["timeout"] == 900
+
+
+def test_ollama_needs_no_key():
+    client = OllamaClient()
+    assert client is not None
+
+
+def test_make_client_ollama(monkeypatch):
+    assert isinstance(make_client("ollama"), OllamaClient)
 
 
 # --- Rate limiting + 429-aware retry (Phase 0) ---
